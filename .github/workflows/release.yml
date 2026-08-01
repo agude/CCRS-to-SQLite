@@ -1,0 +1,52 @@
+# Publishes to PyPI when a GitHub release is published.
+#
+# The full CI pipeline runs first and gates the publish: PyPI uploads cannot
+# be undone, so nothing ships that the matrix has not proven.
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [ci]
+    name: Build and publish to PyPI
+    # Trusted publishing is scoped to this environment on PyPI; protection
+    # rules on it are the last gate before an irreversible upload.
+    environment: pypi
+    permissions:
+      # Trusted publishing: no API token stored in the repo.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Set up just
+        uses: extractions/setup-just@v4
+
+      # The tag is what humans read; __init__.py is what pip installs. A
+      # mismatch ships a version nobody can reproduce from the tag.
+      - name: Verify tag matches package version
+        run: |
+          pkg_version=$(uv run python -c "from ccrs_to_sqlite import __version__; print(__version__)")
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$pkg_version" != "$tag_version" ]; then
+            echo "ERROR: tag ($tag_version) does not match __version__ ($pkg_version)"
+            exit 1
+          fi
+
+      - name: Build
+        run: just build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

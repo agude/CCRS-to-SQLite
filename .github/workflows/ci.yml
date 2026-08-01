@@ -1,0 +1,75 @@
+# Callable CI for ccrs_to_sqlite. Every step calls a task-runner recipe, so this
+# file never needs editing when the tooling changes — only when the shape of
+# the pipeline does.
+#
+# Called by tests.yml (push/PR) and release.yml (before publishing).
+name: CI
+
+on:
+  workflow_call:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    name: Lint
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Set up just
+        uses: extractions/setup-just@v4
+
+      - name: Install dependencies
+        run: just sync
+
+      - name: Lint
+        run: just lint
+
+      - name: Type check
+        run: just type-check
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+          # Pure stdlib package, so PyPy is cheap to cover and worth it for
+          # a converter that is CPU-bound on csv parsing.
+          - "pypy3.11"
+    name: Python ${{ matrix.python-version }}
+    # Required whenever .python-version exists: uv honours that pin, so
+    # without this override every matrix leg silently tests the same
+    # interpreter while reporting different version names.
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Set up just
+        uses: extractions/setup-just@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: just sync
+
+      - name: Test
+        run: just test
+
+      # Catches packaging mistakes the test suite cannot: a console script
+      # that imports fine from the source tree but not from a built wheel.
+      - name: Smoke test
+        run: |
+          uv pip install .
+          uv run ccrs_to_sqlite --help

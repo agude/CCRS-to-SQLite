@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+dist/
+build/
+*.egg-info/
+
+# uv — .venv is local; uv.lock is committed (do not add it here)
+.venv/
+
+# Full source CSVs and built databases: gigabytes of public data,
+# re-downloadable from https://data.ca.gov/dataset/ccrs. Deliberately
+# narrow, so the small checked-in samples under tests/data/ stay tracked.
+tmp_data/
+*.sqlite3
+
+# Scratch files
+plan.md

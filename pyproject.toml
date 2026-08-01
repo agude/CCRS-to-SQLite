@@ -1,0 +1,114 @@
+[project]
+name = "ccrs-to-sqlite"
+dynamic = ["version"]
+description = "Convert California Crash Reporting System (CCRS) CSV exports to SQLite."
+readme = "README.md"
+license = "CC0-1.0"
+license-files = ["LICENSE.md"]
+authors = [{ name = "Alexander Gude", email = "alex.public.account@gmail.com" }]
+# The standard floor is the oldest non-EOL CPython, which is 3.10 until
+# October 2026. This repo starts at 3.11 (per plan.md): 3.10 goes EOL
+# before the package reaches v1.0, so supporting it would mean claiming a
+# version the matrix drops within months.
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+    "Topic :: Utilities",
+]
+keywords = ["ccrs", "sqlite", "collisions", "california", "data"]
+dependencies = []
+
+[project.scripts]
+ccrs_to_sqlite = "ccrs_to_sqlite.main:main"
+
+[project.urls]
+Homepage = "https://github.com/agude/ccrs-to-sqlite"
+Repository = "https://github.com/agude/ccrs-to-sqlite"
+Issues = "https://github.com/agude/ccrs-to-sqlite/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+# Version has one home: the package's __init__.py. Nothing else stores it,
+# so nothing else can disagree with it. The explicit pattern is required
+# because hatchling's default does not match an annotated assignment.
+path = "src/ccrs_to_sqlite/__init__.py"
+pattern = "^__version__(?::\\s*str)?\\s*=\\s*['\"](?P<version>[^'\"]+)['\"]"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ccrs_to_sqlite"]
+
+[tool.hatch.build.targets.sdist]
+# Agent docs are noise for anyone installing from source.
+exclude = ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "tmp_data"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+    "ruff>=0.16",
+    "mypy>=1.15",
+]
+
+[tool.ruff]
+# Match requires-python.
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "SIM",    # flake8-simplify
+    "RET",    # flake8-return
+    "RUF",    # Ruff-specific
+    "PTH",    # flake8-use-pathlib
+]
+ignore = [
+    "E501",   # line too long (handled by the formatter)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+# Required with a src/ layout and no tests/__init__.py: without them mypy
+# resolves tests/test_x.py as top-level `test_x`, so the `tests.*` override
+# below silently never matches. mypy_path stops the package being discovered
+# twice (as src.pkg and pkg), which is a hard error.
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+# Test bodies are the assertion; annotating every fixture buys nothing.
+# disallow_untyped_calls follows it, or typed tests calling untyped helpers
+# re-report the same noise under a different code.
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=ccrs_to_sqlite --cov-fail-under=90"
