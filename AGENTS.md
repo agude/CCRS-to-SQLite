@@ -13,8 +13,9 @@ The full design — source-data quirks, schema, parsing rules, CLI, and
 milestones — lives in `plan.md`. Read it before changing anything about the
 schema or the converters.
 
-Status: scaffolded. The CLI parses arguments; conversion is not implemented
-yet. Milestone v0.1.0 in `plan.md` is the next target.
+Status: milestone v0.1.0 is complete except for directory mode. Named source
+files convert into the full schema. Milestone v0.2.0 in `plan.md` — directory
+discovery, the full make map, and the golden test — is the next target.
 
 ## Archetype
 
