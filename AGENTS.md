@@ -50,7 +50,4 @@ samples for the golden test belong in `tests/data/` and are tracked.
   CPython, which is 3.10 until October 2026. 3.10 goes EOL before this
   package reaches v1.0, so supporting it would mean claiming a version the
   matrix drops within months. `plan.md` §2 sets 3.11.
-- **`tests.yml` restricts `push` to `main` and tags.** The standard is
-  `on: [push, pull_request]` for all branches. `plan.md` §6 calls for the
-  narrower trigger so a PR from a branch in this repo runs the matrix once
-  instead of twice; `pull_request` still covers every branch.
+*(None besides the Python floor above.)*

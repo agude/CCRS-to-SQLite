@@ -2,16 +2,13 @@
 # (workflow_call) means release.yml runs the exact same pipeline rather than
 # a copy that can drift.
 #
-# project-standards deviation: the standard tests.yml is `on: [push,
-# pull_request]` across all branches. Push is restricted to main and tags
-# here (plan.md §6) so a PR from a branch in this repo runs the matrix once
-# instead of twice; pull_request still covers every branch.
+# Every branch runs on push. Pushing a branch is how changes get tested here;
+# they usually reach main without a pull request, so a trigger that waited for
+# one would leave most changes untested.
 name: Tests
 
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
