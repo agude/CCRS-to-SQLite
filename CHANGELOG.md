@@ -14,8 +14,7 @@ adheres to [Semantic Versioning][semver].
 
 - Repo scaffolding: uv + hatchling packaging, ruff, mypy strict, pytest with
   a 90% coverage gate, a `justfile` holding the one definition of each
-  check, a pre-commit hook that calls it, and CI over CPython 3.11–3.14 and
-  PyPy.
+  check, a pre-commit hook that calls it, and CI over CPython 3.11–3.14.
 - `ccrs_to_sqlite` console script and a `convert()` library function that
   read named CCRS source files into a typed SQLite database.
 - Five `STRICT` tables: `crashes`, `parties`, `vehicles`,

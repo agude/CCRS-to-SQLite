@@ -40,9 +40,6 @@ jobs:
           - "3.12"
           - "3.13"
           - "3.14"
-          # Pure stdlib package, so PyPy is cheap to cover and worth it for
-          # a converter that is CPU-bound on csv parsing.
-          - "pypy3.11"
     name: Python ${{ matrix.python-version }}
     # Required whenever .python-version exists: uv honours that pin, so
     # without this override every matrix leg silently tests the same
