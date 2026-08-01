@@ -8,6 +8,7 @@ notebook or another script without shelling out.
 from __future__ import annotations
 
 import argparse
+import csv
 import sqlite3
 import sys
 from contextlib import closing
@@ -198,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
             strict=arguments.strict,
             parse_error=arguments.parse_error,
         )
-    except (OSError, ValueError, sqlite3.Error, DuplicatePrimaryKeyError) as error:
+    except (OSError, ValueError, csv.Error, sqlite3.Error, DuplicatePrimaryKeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return FAILURE_EXIT_CODE
 

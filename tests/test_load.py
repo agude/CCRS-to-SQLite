@@ -10,6 +10,7 @@ from ccrs_to_sqlite import __version__
 from ccrs_to_sqlite.load import (
     CRASHES_SOURCE,
     INJURED_SOURCE,
+    MAX_CSV_FIELD_SIZE,
     ORPHAN_CHECKED_TABLES,
     PARTIES_SOURCE,
     SCHEMA_VERSION,
@@ -200,6 +201,35 @@ def test_a_row_without_a_primary_key_is_skipped(tmp_path, connection, progress):
     assert report.rows_skipped == 1
     assert "crashes.collision_id is empty" in progress.getvalue()
     assert stored(connection, CRASHES, "collision_id") == [(1,)]
+
+
+def test_an_oversized_field_stops_the_load_with_a_located_message(tmp_path, connection, progress):
+    """csv.Error is not a ValueError, so it used to escape as a bare traceback."""
+    path = write_source_file(tmp_path, "crashes", [a_crash(1)])
+    with path.open("a", newline="", encoding="utf-8") as source_file:
+        source_file.write('2,"' + "x" * (MAX_CSV_FIELD_SIZE + 1024) + '"\r\n')
+
+    with pytest.raises(ValueError, match=r"crashes_2025\.csv:\d+: field larger than field limit"):
+        load(connection, path, CRASHES_SOURCE, progress)
+
+
+def test_a_field_under_the_raised_limit_still_loads(tmp_path, connection, progress):
+    """The default 128 KiB cap is well inside what a narrative column can hold."""
+    long_narrative = "x" * 200_000
+    path = write_source_file(tmp_path, "crashes", [a_crash(1, **{"sketchdesc": long_narrative})])
+
+    load(connection, path, CRASHES_SOURCE, progress)
+
+    assert stored(connection, CRASHES, "sketch_description") == [(long_narrative,)]
+
+
+def test_the_field_size_limit_is_restored_afterwards(tmp_path, connection, progress):
+    """It is process-global; a library must not change it for everyone else."""
+    before = csv.field_size_limit()
+
+    load(connection, write_source_file(tmp_path, "crashes", [a_crash(1)]), CRASHES_SOURCE, progress)
+
+    assert csv.field_size_limit() == before
 
 
 def test_an_unrecognized_header_stops_the_load(tmp_path, connection, progress):

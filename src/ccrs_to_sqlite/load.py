@@ -20,6 +20,7 @@ import re
 import sqlite3
 import sys
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,6 +61,11 @@ PROGRESS_INTERVAL = 100_000
 # on older ones. Existence probes stay under the smaller figure so they work
 # against whatever sqlite3 the interpreter was built with.
 MAX_QUERY_PARAMETERS = 900
+
+# csv caps a single field at 128 KiB by default. Narrative and sketch columns
+# are free text controlled by CHP, so the cap is lifted well past anything a
+# report should contain while still refusing to buffer a runaway file.
+MAX_CSV_FIELD_SIZE = 16 * 1024 * 1024
 
 # Stamped into PRAGMA user_version. Bump it whenever a column is added,
 # removed, renamed, or retyped, so a consumer can tell without introspecting.
@@ -265,12 +271,12 @@ def load_source_file(
     report = LoadReport(source_file=path.name, table_name=kind.table.name)
     print(f"{path.name}: reading into {kind.table.name}", file=progress)
 
-    with open_source_file(path, parse_error) as source_file:
+    with open_source_file(path, parse_error) as source_file, _relaxed_field_size_limit():
         reader = csv.reader(source_file)
         plan = _plan_source_file(reader, kind, path.name)
         batches = _Batches(connection, kind, guard, path.name)
 
-        for row in reader:
+        for row in _read_rows(reader, path.name):
             report.rows_read += 1
             try:
                 table_values, vehicles = plan.convert(row)
@@ -455,7 +461,7 @@ class _Batches:
 def _warn_skipped_row(
     path: Path,
     line_number: int,
-    error: ValueError,
+    error: Exception,
     strict: bool,
     progress: TextIO,
 ) -> None:
@@ -464,6 +470,43 @@ def _warn_skipped_row(
         raise ValueError(message) from None
 
     print(f"warning: skipping row, {message}", file=progress)
+
+
+def _read_rows(reader: Iterator[list[str]], source_name: str) -> Iterator[list[str]]:
+    """Yield rows, turning a csv parse failure into a located, catchable error.
+
+    Unlike a ragged row this is not recoverable: the parser gives up partway
+    through a row, so where it would resume is anyone's guess. It stops the
+    load, but as a message naming the file and line rather than as a bare
+    traceback out of the middle of a twenty-minute run.
+    """
+    while True:
+        try:
+            row = next(reader)
+        except StopIteration:
+            return
+        except csv.Error as error:
+            line_number = getattr(reader, "line_num", 0)
+            raise ValueError(f"{source_name}:{line_number}: {error}") from None
+
+        yield row
+
+
+@contextmanager
+def _relaxed_field_size_limit() -> Iterator[None]:
+    """Lift csv's 128 KiB field cap for the duration of one read.
+
+    A free-text column CHP controls can exceed it, and the resulting
+    `csv.Error` is not a ValueError, so it used to escape both the row skipper
+    and the CLI as a bare traceback. The limit is process-global, hence
+    restoring it: a library has no business changing it for everyone else.
+    """
+    previous = csv.field_size_limit()
+    csv.field_size_limit(MAX_CSV_FIELD_SIZE)
+    try:
+        yield
+    finally:
+        csv.field_size_limit(previous)
 
 
 def _default_progress(progress: TextIO | None) -> TextIO:
