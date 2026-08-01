@@ -132,6 +132,8 @@ class LoadReport:
     rows_read: int = 0
     rows_loaded: int = 0
     rows_skipped: int = 0
+    # Rows kept whose inline vehicle columns could not be converted.
+    vehicles_skipped: int = 0
 
 
 @dataclass(frozen=True)
@@ -279,13 +281,19 @@ def load_source_file(
         for row in _read_rows(reader, path.name):
             report.rows_read += 1
             try:
-                table_values, vehicles = plan.convert(row)
+                converted = plan.convert(row)
             except ValueError as error:
                 report.rows_skipped += 1
                 _warn_skipped_row(path, reader.line_num, error, strict, progress)
                 continue
 
-            batches.add(table_values, vehicles)
+            if converted.vehicle_error is not None:
+                report.vehicles_skipped += 1
+                _warn_skipped_vehicles(
+                    path, reader.line_num, converted.vehicle_error, strict, progress
+                )
+
+            batches.add(converted.values, converted.vehicles)
             report.rows_loaded += 1
             if report.rows_read % PROGRESS_INTERVAL == 0:
                 print(f"{path.name}: {report.rows_read:,} rows", file=progress)
@@ -295,10 +303,10 @@ def load_source_file(
     if guard is not None:
         guard.finish_file(path.name)
 
-    print(
-        f"{path.name}: {report.rows_loaded:,} rows loaded, {report.rows_skipped:,} skipped",
-        file=progress,
-    )
+    summary = f"{path.name}: {report.rows_loaded:,} rows loaded, {report.rows_skipped:,} skipped"
+    if report.vehicles_skipped:
+        summary += f", {report.vehicles_skipped:,} kept without their vehicles"
+    print(summary, file=progress)
     return report
 
 
@@ -379,6 +387,15 @@ def _record_metadata(
     connection.execute(METADATA.insert_sql(), [entry[name] for name in METADATA.column_names])
 
 
+@dataclass(frozen=True)
+class _ConvertedRow:
+    """One source row turned into rows to insert, plus whatever went wrong."""
+
+    values: list[SQLiteValue]
+    vehicles: list[list[SQLiteValue]]
+    vehicle_error: ValueError | None = None
+
+
 @dataclass
 class _SourceFilePlan:
     """The per-file setup that makes per-row work plain indexing."""
@@ -390,8 +407,14 @@ class _SourceFilePlan:
     primary_key_index: int | None
     vehicle_plan: VehiclePlan | None
 
-    def convert(self, row: Sequence[str]) -> tuple[list[SQLiteValue], list[list[SQLiteValue]]]:
-        """Convert one raw row, raising ValueError if it cannot be used."""
+    def convert(self, row: Sequence[str]) -> _ConvertedRow:
+        """Convert one raw row, raising ValueError if the row itself cannot be used.
+
+        A failure in the inline vehicle columns is returned rather than
+        raised. Those columns describe the vehicle, not the party, and losing
+        a driver's age, fault, sobriety and speed limit because a trailer's
+        model year was unparseable is a much bigger loss than the vehicle.
+        """
         if len(row) != self.field_count:
             raise ValueError(f"row has {len(row)} fields, expected {self.field_count}")
 
@@ -399,8 +422,13 @@ class _SourceFilePlan:
         if self.primary_key_index is not None and values[self.primary_key_index] is None:
             raise ValueError(f"{self.kind.table.name}.{self.primary_key_name} is empty")
 
-        vehicles = vehicle_rows(self.vehicle_plan, row) if self.vehicle_plan else []
-        return values, vehicles
+        if self.vehicle_plan is None:
+            return _ConvertedRow(values, [])
+
+        try:
+            return _ConvertedRow(values, vehicle_rows(self.vehicle_plan, row))
+        except ValueError as error:
+            return _ConvertedRow(values, [], vehicle_error=error)
 
 
 def _plan_source_file(
@@ -470,6 +498,20 @@ def _warn_skipped_row(
         raise ValueError(message) from None
 
     print(f"warning: skipping row, {message}", file=progress)
+
+
+def _warn_skipped_vehicles(
+    path: Path,
+    line_number: int,
+    error: ValueError,
+    strict: bool,
+    progress: TextIO,
+) -> None:
+    message = f"{path.name}:{line_number}: {error}"
+    if strict:
+        raise ValueError(message) from None
+
+    print(f"warning: keeping the party but dropping its vehicles, {message}", file=progress)
 
 
 def _read_rows(reader: Iterator[list[str]], source_name: str) -> Iterator[list[str]]:

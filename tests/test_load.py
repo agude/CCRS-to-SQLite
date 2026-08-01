@@ -137,6 +137,47 @@ def test_a_parties_file_fills_both_parties_and_vehicles(tmp_path, connection, pr
     ]
 
 
+def test_a_bad_vehicle_cell_keeps_the_party_and_drops_only_its_vehicles(
+    tmp_path, connection, progress
+):
+    """The vehicle columns describe the vehicle; losing the driver with them is over-deletion."""
+    path = write_source_file(
+        tmp_path,
+        "parties",
+        [
+            a_party(1, 100, statedage="55", vehicle1make="TOYT", vehicle2year="unknown"),
+            a_party(2, 100, vehicle1make="FORD"),
+        ],
+    )
+
+    report = load(connection, path, PARTIES_SOURCE, progress)
+
+    assert (report.rows_loaded, report.rows_skipped, report.vehicles_skipped) == (2, 0, 1)
+    assert stored(connection, PARTIES, "party_id", "stated_age") == [(1, 55), (2, None)]
+    assert stored(connection, VEHICLES, "party_id", "make_raw") == [(2, "FORD")]
+    assert "keeping the party but dropping its vehicles" in progress.getvalue()
+    assert "vehicles.year (vehicle 2)" in progress.getvalue()
+
+
+def test_strict_makes_a_bad_vehicle_cell_fatal(tmp_path, connection, progress):
+    path = write_source_file(tmp_path, "parties", [a_party(1, 100, vehicle2year="unknown")])
+
+    with pytest.raises(ValueError, match=r"vehicles\.year \(vehicle 2\)"):
+        load(connection, path, PARTIES_SOURCE, progress, strict=True)
+
+
+def test_a_skipped_party_row_takes_its_vehicles_with_it(tmp_path, connection, progress):
+    """The party is the vehicle's identity, so a vehicle cannot outlive it."""
+    path = write_source_file(tmp_path, "parties", [a_party(1, 100, vehicle1make="TOYT")])
+    with path.open("a", newline="", encoding="utf-8") as source_file:
+        source_file.write("2,100,extra\r\n")
+
+    report = load(connection, path, PARTIES_SOURCE, progress)
+
+    assert (report.rows_loaded, report.rows_skipped) == (1, 1)
+    assert stored(connection, VEHICLES, "party_id") == [(1,)]
+
+
 def test_an_injured_file_loads(tmp_path, connection, progress):
     path = write_source_file(
         tmp_path,
