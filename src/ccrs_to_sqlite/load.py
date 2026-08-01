@@ -32,9 +32,11 @@ from ccrs_to_sqlite.schema import (
     ALL_TABLES,
     CRASHES,
     CRASHES_SOURCE_HEADERS,
+    FILE_LOAD_RECORD,
     INJURED_SOURCE_HEADERS,
     INJURED_WITNESS_PASSENGERS,
     METADATA,
+    ORPHAN_COUNT_RECORD,
     PARTIES,
     PARTIES_SOURCE_HEADERS,
     VEHICLES,
@@ -319,6 +321,7 @@ def record_file_load(
     """Log one source file's load in the metadata table."""
     _record_metadata(
         connection,
+        record_type=FILE_LOAD_RECORD,
         source_file=report.source_file,
         table_name=report.table_name,
         year_label=year_label,
@@ -333,14 +336,20 @@ def record_orphan_count(connection: sqlite3.Connection, table: Table, orphan_row
 
     Orphans are a property of the finished database rather than of any one
     file --- a party is orphaned only because no file supplied its crash ---
-    so this is its own entry, with no source file attached.
+    so this is its own kind of entry, with no source file attached.
     """
-    _record_metadata(connection, table_name=table.name, orphan_rows=orphan_rows)
+    _record_metadata(
+        connection,
+        record_type=ORPHAN_COUNT_RECORD,
+        table_name=table.name,
+        orphan_rows=orphan_rows,
+    )
 
 
 def _record_metadata(
     connection: sqlite3.Connection,
     *,
+    record_type: str,
     table_name: str,
     source_file: str | None = None,
     year_label: str | None = None,
@@ -350,15 +359,16 @@ def _record_metadata(
     orphan_rows: int | None = None,
 ) -> None:
     entry: dict[str, SQLiteValue] = {
-        "source_file": source_file,
+        "record_type": record_type,
         "table_name": table_name,
+        "source_file": source_file,
         "year_label": year_label,
         "rows_read": rows_read,
         "rows_loaded": rows_loaded,
         "rows_skipped": rows_skipped,
         "orphan_rows": orphan_rows,
         "converter_version": __version__,
-        "loaded_at": datetime.now(tz=UTC).strftime(ISO_DATETIME_FORMAT),
+        "loaded_at_utc": datetime.now(tz=UTC).strftime(ISO_DATETIME_FORMAT),
     }
     connection.execute(METADATA.insert_sql(), [entry[name] for name in METADATA.column_names])
 

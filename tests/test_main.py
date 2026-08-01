@@ -6,6 +6,7 @@ import pytest
 
 from ccrs_to_sqlite import __version__
 from ccrs_to_sqlite.main import DEFAULT_OUTPUT_FILE, SourceFiles, build_parser, convert, main
+from ccrs_to_sqlite.schema import FILE_LOAD_RECORD, ORPHAN_COUNT_RECORD
 from tests.test_load import a_crash, a_party, a_person, write_source_file
 
 
@@ -113,7 +114,7 @@ def test_convert_logs_provenance_for_every_file(tmp_path, sources, progress):
     logged = rows(
         database,
         "SELECT source_file, table_name, year_label, rows_loaded FROM metadata"
-        " WHERE source_file IS NOT NULL ORDER BY source_file",
+        f" WHERE record_type = '{FILE_LOAD_RECORD}' ORDER BY source_file",
     )
     assert logged == [
         ("crashes_2025.csv", "crashes", "2025", 2),
@@ -130,8 +131,8 @@ def test_convert_counts_and_reports_orphans(tmp_path, sources, progress):
 
     logged = rows(
         database,
-        "SELECT table_name, orphan_rows FROM metadata WHERE source_file IS NULL"
-        " ORDER BY table_name",
+        "SELECT table_name, orphan_rows FROM metadata"
+        f" WHERE record_type = '{ORPHAN_COUNT_RECORD}' ORDER BY table_name",
     )
     assert logged == [
         ("injured_witness_passengers", 0),

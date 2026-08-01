@@ -434,20 +434,35 @@ INJURED_WITNESS_PASSENGERS = Table(
 )
 
 
-# Provenance: one row per source file loaded. Cheap, and it answers "what is
-# actually in this database" long after the shell history is gone.
+# What the metadata table records. Two things get logged and they carry
+# different fields, so the kind is stated in the row rather than inferred from
+# which columns happen to be NULL.
+FILE_LOAD_RECORD = "file_load"
+ORPHAN_COUNT_RECORD = "orphan_count"
+
+# Provenance: a log of what was done to build this database. Cheap, and it
+# answers "what is actually in here" long after the shell history is gone.
 METADATA = Table(
     name="metadata",
+    # No index: this table holds a handful of rows per load, and one more
+    # B-tree to maintain would cost more than it ever saves.
     columns=(
-        Column("source_file", TEXT, to_text),
+        # FILE_LOAD_RECORD or ORPHAN_COUNT_RECORD. A file load fills
+        # source_file, year_label and the row counts; an orphan count fills
+        # orphan_rows. Neither fills the other's columns.
+        Column("record_type", TEXT, to_text),
         Column("table_name", TEXT, to_text),
+        Column("source_file", TEXT, to_text),
         Column("year_label", TEXT, to_text),
         Column("rows_read", INTEGER, to_int),
         Column("rows_loaded", INTEGER, to_int),
         Column("rows_skipped", INTEGER, to_int),
         Column("orphan_rows", INTEGER, to_int),
         Column("converter_version", TEXT, to_text),
-        Column("loaded_at", TEXT, to_text),
+        # UTC, unlike every other timestamp in this database: crash_date and
+        # the report dates are California local time as the source gives them.
+        # The name is the only thing that can carry that distinction.
+        Column("loaded_at_utc", TEXT, to_text),
     ),
 )
 

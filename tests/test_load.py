@@ -24,7 +24,14 @@ from ccrs_to_sqlite.load import (
     record_orphan_count,
 )
 from ccrs_to_sqlite.open_record import open_source_file
-from ccrs_to_sqlite.schema import CRASHES, INJURED_WITNESS_PASSENGERS, PARTIES, VEHICLES
+from ccrs_to_sqlite.schema import (
+    CRASHES,
+    FILE_LOAD_RECORD,
+    INJURED_WITNESS_PASSENGERS,
+    ORPHAN_COUNT_RECORD,
+    PARTIES,
+    VEHICLES,
+)
 
 HEADER_DIRECTORY = Path(__file__).parent / "data" / "headers"
 
@@ -322,26 +329,42 @@ def test_a_file_load_is_logged_in_metadata(tmp_path, connection, progress):
     record_file_load(connection, report, year_label="2025")
 
     logged = connection.execute(
-        "SELECT source_file, table_name, year_label, rows_read, rows_loaded, rows_skipped,"
-        " orphan_rows, converter_version FROM metadata"
+        "SELECT record_type, table_name, source_file, year_label, rows_read, rows_loaded,"
+        " rows_skipped, orphan_rows, converter_version FROM metadata"
     ).fetchall()
-    assert logged == [("crashes_2025.csv", "crashes", "2025", 1, 1, 0, None, __version__)]
+    assert logged == [
+        (FILE_LOAD_RECORD, "crashes", "crashes_2025.csv", "2025", 1, 1, 0, None, __version__)
+    ]
 
 
-def test_an_orphan_count_is_logged_without_a_source_file(connection):
+def test_an_orphan_count_is_logged_as_its_own_record_type(connection):
     """Orphans belong to the finished database, not to any one file."""
     record_orphan_count(connection, PARTIES, 455)
 
     logged = connection.execute(
-        "SELECT source_file, table_name, orphan_rows FROM metadata"
+        "SELECT record_type, table_name, source_file, orphan_rows FROM metadata"
     ).fetchall()
-    assert logged == [(None, "parties", 455)]
+    assert logged == [(ORPHAN_COUNT_RECORD, "parties", None, 455)]
+
+
+def test_the_two_record_types_are_told_apart_by_record_type_not_by_nulls(
+    tmp_path, connection, progress
+):
+    path = write_source_file(tmp_path, "crashes", [a_crash(1)])
+    record_file_load(connection, load(connection, path, CRASHES_SOURCE, progress))
+    record_orphan_count(connection, PARTIES, 455)
+
+    kinds = connection.execute(
+        "SELECT record_type, COUNT(*) FROM metadata GROUP BY record_type ORDER BY record_type"
+    ).fetchall()
+
+    assert kinds == [(FILE_LOAD_RECORD, 1), (ORPHAN_COUNT_RECORD, 1)]
 
 
 def test_metadata_timestamps_are_iso(connection):
     record_orphan_count(connection, PARTIES, 0)
 
-    loaded_at = connection.execute("SELECT loaded_at FROM metadata").fetchone()[0]
+    loaded_at = connection.execute("SELECT loaded_at_utc FROM metadata").fetchone()[0]
 
     assert len(loaded_at) == len("2025-01-14 07:50:00")
     assert loaded_at[4] == loaded_at[7] == "-"
