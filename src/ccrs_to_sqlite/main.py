@@ -160,7 +160,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="treat rows with an unexpected field count as fatal instead of skipping them",
+        help=(
+            "stop on any row the parser cannot use -- wrong field count, a value that "
+            "will not convert, a missing primary key -- instead of skipping it with a "
+            "warning"
+        ),
     )
     parser.add_argument(
         "--parse-error",
