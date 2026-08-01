@@ -267,8 +267,13 @@ def load_source_file(
     parse_error: str = "strict",
     guard: PrimaryKeyGuard | None = None,
     progress: TextIO | None = None,
+    batch_size: int = BATCH_SIZE,
 ) -> LoadReport:
-    """Read one source file into its table, returning what happened."""
+    """Read one source file into its table, returning what happened.
+
+    `batch_size` exists so tests can drive the flush-and-probe path that
+    otherwise only runs past fifty thousand rows.
+    """
     progress = _default_progress(progress)
     report = LoadReport(source_file=path.name, table_name=kind.table.name)
     print(f"{path.name}: reading into {kind.table.name}", file=progress)
@@ -276,7 +281,7 @@ def load_source_file(
     with open_source_file(path, parse_error) as source_file, _relaxed_field_size_limit():
         reader = csv.reader(source_file)
         plan = _plan_source_file(reader, kind, path.name)
-        batches = _Batches(connection, kind, guard, path.name)
+        batches = _Batches(connection, kind, guard, path.name, batch_size)
 
         for row in _read_rows(reader, path.name):
             report.rows_read += 1
@@ -464,13 +469,14 @@ class _Batches:
     kind: SourceKind
     guard: PrimaryKeyGuard | None
     source_file: str
+    batch_size: int = BATCH_SIZE
     table_rows: list[list[SQLiteValue]] = field(default_factory=list)
     vehicle_rows: list[list[SQLiteValue]] = field(default_factory=list)
 
     def add(self, table_values: list[SQLiteValue], vehicles: list[list[SQLiteValue]]) -> None:
         self.table_rows.append(table_values)
         self.vehicle_rows.extend(vehicles)
-        if len(self.table_rows) >= BATCH_SIZE:
+        if len(self.table_rows) >= self.batch_size:
             self.flush()
 
     def flush(self) -> None:

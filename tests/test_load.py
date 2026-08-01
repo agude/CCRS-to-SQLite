@@ -11,6 +11,7 @@ from ccrs_to_sqlite.load import (
     CRASHES_SOURCE,
     INJURED_SOURCE,
     MAX_CSV_FIELD_SIZE,
+    MAX_QUERY_PARAMETERS,
     ORPHAN_CHECKED_TABLES,
     PARTIES_SOURCE,
     SCHEMA_VERSION,
@@ -297,6 +298,86 @@ def test_progress_names_the_file_and_reports_the_totals(tmp_path, connection, pr
     output = progress.getvalue()
     assert "crashes_2025.csv: reading into crashes" in output
     assert "crashes_2025.csv: 2 rows loaded, 0 skipped" in output
+
+
+def test_rows_spanning_several_batches_all_land(tmp_path, connection, progress):
+    """Nothing else exercises the mid-file flush: it needs 50,000 rows to trigger."""
+    crashes = [a_crash(key) for key in range(1, 12)]
+    path = write_source_file(tmp_path, "crashes", crashes)
+
+    report = load(connection, path, CRASHES_SOURCE, progress, batch_size=2)
+
+    assert report.rows_loaded == 11
+    assert stored(connection, CRASHES, "collision_id") == [(key,) for key in range(1, 12)]
+
+
+def test_a_partial_final_batch_is_flushed(tmp_path, connection, progress):
+    path = write_source_file(tmp_path, "crashes", [a_crash(key) for key in range(1, 8)])
+
+    load(connection, path, CRASHES_SOURCE, progress, batch_size=3)
+
+    assert stored(connection, CRASHES, "collision_id") == [(key,) for key in range(1, 8)]
+
+
+def test_vehicles_survive_batching_alongside_their_parties(tmp_path, connection, progress):
+    parties = [a_party(key, 100, vehicle1make="TOYT", vehicle2make="GDAN") for key in range(1, 10)]
+    path = write_source_file(tmp_path, "parties", parties)
+
+    load(connection, path, PARTIES_SOURCE, progress, batch_size=2)
+
+    assert stored(connection, VEHICLES, "party_id", "vehicle_number") == [
+        (party_id, number) for party_id in range(1, 10) for number in (1, 2)
+    ]
+
+
+def test_duplicate_probing_works_across_batches_and_parameter_chunks(
+    tmp_path, connection, progress
+):
+    """The probe chunks keys at MAX_QUERY_PARAMETERS; nothing else spans a chunk."""
+    guard = PrimaryKeyGuard(CRASHES)
+    first = tmp_path / "first"
+    first.mkdir()
+    load(
+        connection,
+        write_source_file(first, "crashes", [a_crash(key) for key in range(1, 30)]),
+        CRASHES_SOURCE,
+        progress,
+        guard=guard,
+        batch_size=4,
+    )
+
+    second = tmp_path / "second"
+    second.mkdir()
+    overlapping = write_source_file(second, "crashes", [a_crash(key) for key in range(25, 40)])
+
+    with pytest.raises(DuplicatePrimaryKeyError, match=r"crashes\.collision_id 2[5-9]"):
+        load(connection, overlapping, CRASHES_SOURCE, progress, guard=guard, batch_size=4)
+
+
+def test_the_key_probe_chunks_keys_to_stay_under_the_parameter_limit(
+    tmp_path, connection, progress
+):
+    """A batch larger than MAX_QUERY_PARAMETERS must not become one huge IN clause."""
+    guard = PrimaryKeyGuard(CRASHES)
+    first = tmp_path / "first"
+    first.mkdir()
+    load(
+        connection,
+        write_source_file(first, "crashes", [a_crash(1)]),
+        CRASHES_SOURCE,
+        progress,
+        guard=guard,
+    )
+
+    second = tmp_path / "second"
+    second.mkdir()
+    many = write_source_file(
+        second, "crashes", [a_crash(key) for key in range(100, 100 + MAX_QUERY_PARAMETERS + 50)]
+    )
+
+    report = load(connection, many, CRASHES_SOURCE, progress, guard=guard)
+
+    assert report.rows_loaded == MAX_QUERY_PARAMETERS + 50
 
 
 def test_one_file_per_table_needs_no_duplicate_probing(tmp_path, connection, progress):
