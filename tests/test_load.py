@@ -12,6 +12,7 @@ from ccrs_to_sqlite.load import (
     INJURED_SOURCE,
     ORPHAN_CHECKED_TABLES,
     PARTIES_SOURCE,
+    SCHEMA_VERSION,
     DuplicatePrimaryKeyError,
     PrimaryKeyGuard,
     apply_bulk_load_pragmas,
@@ -344,6 +345,12 @@ def test_metadata_timestamps_are_iso(connection):
 
     assert len(loaded_at) == len("2025-01-14 07:50:00")
     assert loaded_at[4] == loaded_at[7] == "-"
+
+
+def test_the_schema_version_is_stamped_into_the_file(connection):
+    """A consumer should be able to check the shape without introspecting it."""
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert SCHEMA_VERSION > 0
 
 
 def test_bulk_load_pragmas_take_effect(connection):

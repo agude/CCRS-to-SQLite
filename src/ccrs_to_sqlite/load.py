@@ -59,6 +59,10 @@ PROGRESS_INTERVAL = 100_000
 # against whatever sqlite3 the interpreter was built with.
 MAX_QUERY_PARAMETERS = 900
 
+# Stamped into PRAGMA user_version. Bump it whenever a column is added,
+# removed, renamed, or retyped, so a consumer can tell without introspecting.
+SCHEMA_VERSION = 1
+
 BULK_LOAD_PRAGMAS = (
     # No rollback journal: the database is built in a temporary file that is
     # deleted on failure, so there is nothing to roll back to.
@@ -222,6 +226,11 @@ def create_schema(connection: sqlite3.Connection) -> None:
     """Create every table. Indexes are deliberately left until after loading."""
     for table in ALL_TABLES:
         connection.execute(table.create_table_sql())
+
+    # Answers "does this file's shape match what my queries expect", which is
+    # a different question from metadata.converter_version -- that records the
+    # tool, and the tool changes for reasons that leave the schema alone.
+    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 def apply_bulk_load_pragmas(connection: sqlite3.Connection) -> None:
