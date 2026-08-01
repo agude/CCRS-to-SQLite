@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sqlite3
 import sys
 from contextlib import closing
@@ -82,6 +83,8 @@ def convert(
     a half-written database sitting where the next run has to work around it.
     """
     progress = sys.stderr if progress is None else progress
+
+    _check_sources_are_readable(sources)
 
     if output_file.exists():
         raise FileExistsError(
@@ -204,6 +207,27 @@ def main(argv: list[str] | None = None) -> int:
         return FAILURE_EXIT_CODE
 
     return 0
+
+
+def _check_sources_are_readable(sources: SourceFiles) -> None:
+    """Fail on a missing or unreadable source before any work starts.
+
+    Without this, a typo in the third filename is discovered after the first
+    two files have already been read -- minutes per year -- and the partial
+    database is then thrown away. Every problem it can find is reported at
+    once, so a second typo does not mean a second round trip.
+    """
+    problems = []
+    for _, path in sources.in_load_order():
+        if not path.exists():
+            problems.append(f"{path}: no such file")
+        elif path.is_dir():
+            problems.append(f"{path}: is a directory, not a CSV")
+        elif not os.access(path, os.R_OK):
+            problems.append(f"{path}: not readable")
+
+    if problems:
+        raise FileNotFoundError("; ".join(problems))
 
 
 def _build_database(

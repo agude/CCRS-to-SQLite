@@ -152,6 +152,38 @@ def test_convert_refuses_to_overwrite_an_existing_database(tmp_path, sources, pr
     assert database.read_text(encoding="utf-8") == "not really a database"
 
 
+def test_a_missing_source_file_is_caught_before_any_loading(tmp_path, sources, progress):
+    """A typo in the third filename should not cost two files' worth of loading."""
+    database = tmp_path / "ccrs.sqlite3"
+    broken = SourceFiles(
+        crashes=sources.crashes,
+        parties=sources.parties,
+        injured=(tmp_path / "typo.csv",),
+    )
+
+    with pytest.raises(FileNotFoundError, match=r"typo\.csv: no such file"):
+        convert(broken, database, progress=progress)
+
+    assert progress.getvalue() == ""
+    assert not database.exists()
+
+
+def test_every_unreadable_source_is_reported_at_once(tmp_path, progress):
+    missing = tmp_path / "crashes_2025.csv"
+    a_directory = tmp_path / "parties_2025.csv"
+    a_directory.mkdir()
+
+    with pytest.raises(FileNotFoundError) as failure:
+        convert(
+            SourceFiles(crashes=(missing,), parties=(a_directory,)),
+            tmp_path / "out.sqlite3",
+            progress=progress,
+        )
+
+    assert "no such file" in str(failure.value)
+    assert "is a directory" in str(failure.value)
+
+
 def test_a_failed_run_leaves_no_partial_database(tmp_path, progress):
     """A half-written file sitting at the destination would block every retry."""
     broken = tmp_path / "crashes_2025.csv"
