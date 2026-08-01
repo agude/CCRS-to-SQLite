@@ -112,16 +112,21 @@ def to_time(value: str) -> str | None:
 def to_time_description(value: str) -> str | None:
     """Return a 24-hour ``HHMM`` string zero-padded to four digits, or None when empty.
 
-    Values are left otherwise untouched. The source contains impossible times
-    such as ``2500``; correcting them would be guessing, and they are easy to
-    filter downstream once the width is uniform.
+    A minority of values arrive punctuated as ``H:MM``; the colon is dropped
+    so the column holds one shape rather than two. 448 of the 214,873
+    `NotificationTimeDescription` values in the 2025 file look like this.
+
+    Values are otherwise left alone. The source contains impossible times such
+    as ``2500``, its marker for an unknown time; correcting those would be
+    guessing, and they are easy to filter once the width is uniform.
     """
     stripped = value.strip()
     if not stripped:
         return None
 
-    if stripped.isdigit():
-        return stripped.zfill(TIME_DESCRIPTION_WIDTH)
+    unpunctuated = stripped.replace(":", "")
+    if unpunctuated.isdigit():
+        return unpunctuated.zfill(TIME_DESCRIPTION_WIDTH)
 
     return stripped
 

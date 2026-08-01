@@ -132,6 +132,15 @@ def test_to_time_description_pads_to_four_digits(cell, expected):
     assert to_time_description(cell) == expected
 
 
+@pytest.mark.parametrize(
+    ("cell", "expected"),
+    [("7:50", "0750"), ("07:50", "0750"), ("15:20", "1520"), (" 8:28 ", "0828")],
+)
+def test_to_time_description_drops_the_colon_from_punctuated_times(cell, expected):
+    """448 notification times in the 2025 file are punctuated; the column holds one shape."""
+    assert to_time_description(cell) == expected
+
+
 def test_to_time_description_keeps_impossible_times_as_they_came():
     """2500 appears thousands of times in the 2025 file; correcting it would be a guess."""
     assert to_time_description("2500") == "2500"
