@@ -270,8 +270,9 @@ def test_the_duplicate_message_points_at_the_file_that_supplied_the_key_first(
     assert "two snapshots" in str(failure.value)
 
 
-def test_a_table_without_a_primary_key_cannot_be_guarded():
-    with pytest.raises(ValueError, match="has no primary key to guard"):
+def test_a_table_without_a_single_column_key_cannot_be_guarded():
+    """vehicles has a composite key, which is not a rowid and needs no guard."""
+    with pytest.raises(ValueError, match="has no single-column primary key to guard"):
         PrimaryKeyGuard(VEHICLES)
 
 
@@ -307,8 +308,8 @@ def test_indexes_are_built_after_loading(connection, progress):
 
     assert sorted(name for (name,) in indexes) == [
         "index_crashes_crash_date",
-        "index_injured_witness_passengers_collision_id",
-        "index_parties_collision_id",
+        "index_injured_witness_passengers_collision_id_party_number",
+        "index_parties_collision_id_party_number",
         "index_vehicles_collision_id",
     ]
 

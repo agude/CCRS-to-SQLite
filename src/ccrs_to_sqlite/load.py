@@ -147,12 +147,15 @@ class PrimaryKeyGuard:
     """
 
     def __init__(self, table: Table) -> None:
-        if table.primary_key is None:
-            raise ValueError(f"{table.name} has no primary key to guard")
+        # A single INTEGER primary key is SQLite's rowid, which is what makes
+        # the probe below a cheap B-tree search. A composite key would need a
+        # different query and no table here has one.
+        if table.rowid_alias is None:
+            raise ValueError(f"{table.name} has no single-column primary key to guard")
 
         self.table = table
-        self.primary_key = table.primary_key
-        self._key_index = table.column_names.index(table.primary_key)
+        self.primary_key = table.rowid_alias
+        self._key_index = table.column_names.index(self.primary_key)
         self._loaded_ranges: list[LoadedKeyRange] = []
         self._smallest_seen: int | None = None
         self._largest_seen: int | None = None
@@ -358,6 +361,7 @@ class _SourceFilePlan:
     kind: SourceKind
     field_count: int
     positions: tuple[int, ...]
+    primary_key_name: str | None
     primary_key_index: int | None
     vehicle_plan: VehiclePlan | None
 
@@ -368,7 +372,7 @@ class _SourceFilePlan:
 
         values = convert_row(self.kind.table, row, self.positions)
         if self.primary_key_index is not None and values[self.primary_key_index] is None:
-            raise ValueError(f"{self.kind.table.name}.{self.kind.table.primary_key} is empty")
+            raise ValueError(f"{self.kind.table.name}.{self.primary_key_name} is empty")
 
         vehicles = vehicle_rows(self.vehicle_plan, row) if self.vehicle_plan else []
         return values, vehicles
@@ -386,11 +390,12 @@ def _plan_source_file(
     header_positions = index_header_row(header_row, source_name)
     check_expected_headers(header_positions, kind.expected_headers, source_name)
 
-    primary_key = kind.table.primary_key
+    primary_key = kind.table.rowid_alias
     return _SourceFilePlan(
         kind=kind,
         field_count=len(header_row),
         positions=column_positions(kind.table, header_positions),
+        primary_key_name=primary_key,
         primary_key_index=(
             kind.table.column_names.index(primary_key) if primary_key is not None else None
         ),

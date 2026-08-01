@@ -145,12 +145,39 @@ def test_a_declared_primary_key_reaches_the_ddl():
 
 
 def test_index_statements_cover_the_declared_indexes():
-    assert PARTIES.create_index_sql() == [
-        "CREATE INDEX index_parties_collision_id ON parties (collision_id)"
-    ]
     assert CRASHES.create_index_sql() == [
         "CREATE INDEX index_crashes_crash_date ON crashes (crash_date)"
     ]
+    assert PARTIES.create_index_sql() == [
+        "CREATE INDEX index_parties_collision_id_party_number "
+        "ON parties (collision_id, party_number)"
+    ]
+
+
+def test_a_composite_primary_key_is_declared_at_table_level():
+    """vehicles is the one table invented here, so it has to declare its own identity."""
+    assert VEHICLES.primary_key == ("party_id", "vehicle_number")
+    assert "PRIMARY KEY (party_id, vehicle_number)" in VEHICLES.create_table_sql()
+    assert VEHICLES.rowid_alias is None
+
+
+@pytest.mark.parametrize("table", [CRASHES, PARTIES, INJURED_WITNESS_PASSENGERS])
+def test_source_keyed_tables_alias_the_rowid(table):
+    """A single INTEGER primary key is the rowid itself, which the loader relies on."""
+    assert table.rowid_alias == table.primary_key[0]
+    assert f"{table.rowid_alias} INTEGER PRIMARY KEY" in table.create_table_sql()
+
+
+def test_no_index_repeats_a_primary_key():
+    """A primary key builds its own index; a second copy would be paid for twice."""
+    for table in ALL_TABLES:
+        assert table.primary_key not in table.indexes, table.name
+
+
+def test_the_documented_person_to_party_link_is_indexed():
+    """plan.md names collision_id + party_number as the link; both sides carry it."""
+    assert ("collision_id", "party_number") in PARTIES.indexes
+    assert ("collision_id", "party_number") in INJURED_WITNESS_PASSENGERS.indexes
 
 
 def test_index_header_row_rejects_a_repeated_header():

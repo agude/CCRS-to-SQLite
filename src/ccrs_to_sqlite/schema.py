@@ -83,12 +83,29 @@ class Table:
 
     name: str
     columns: tuple[Column, ...]
-    primary_key: str | None = None
-    indexed_columns: tuple[str, ...] = ()
+    # One column for the tables the source keys itself; several for a table
+    # whose identity is a combination, as `vehicles` is.
+    primary_key: tuple[str, ...] = ()
+    # Each entry is one index, over one or more columns in order.
+    indexes: tuple[tuple[str, ...], ...] = ()
 
     @property
     def column_names(self) -> tuple[str, ...]:
         return tuple(column.name for column in self.columns)
+
+    @property
+    def rowid_alias(self) -> str | None:
+        """The single INTEGER column that is this table's primary key, if it has one.
+
+        Such a column *is* SQLite's rowid rather than a copy of it, which is
+        why the loader can rely on the engine to reject a duplicate. A
+        composite key gets no such treatment.
+        """
+        if len(self.primary_key) != 1:
+            return None
+
+        name = self.primary_key[0]
+        return name if self.column(name).sql_type == INTEGER else None
 
     def column(self, name: str) -> Column:
         """Return the named column, or raise KeyError."""
@@ -107,17 +124,26 @@ class Table:
         """
         definitions = [
             f"    {column.name} {column.sql_type}"
-            + (" PRIMARY KEY" if column.name == self.primary_key else "")
+            + (" PRIMARY KEY" if column.name == self.rowid_alias else "")
             for column in self.columns
         ]
+        if self.primary_key and self.rowid_alias is None:
+            definitions.append(f"    PRIMARY KEY ({', '.join(self.primary_key)})")
+
         body = ",\n".join(definitions)
         return f"CREATE TABLE {self.name} (\n{body}\n) STRICT"
 
     def create_index_sql(self) -> list[str]:
-        """Return the CREATE INDEX statements, run after loading rather than before."""
+        """Return the CREATE INDEX statements, run after loading rather than before.
+
+        A primary key already builds its own index, so nothing here repeats
+        one: `vehicles(party_id, vehicle_number)` serves lookups by party as
+        well, since a lookup can use any leading run of an index's columns.
+        """
         return [
-            f"CREATE INDEX index_{self.name}_{column_name} ON {self.name} ({column_name})"
-            for column_name in self.indexed_columns
+            f"CREATE INDEX index_{self.name}_{'_'.join(columns)} "
+            f"ON {self.name} ({', '.join(columns)})"
+            for columns in self.indexes
         ]
 
     def insert_sql(self) -> str:
@@ -133,8 +159,8 @@ class Table:
 
 CRASHES = Table(
     name="crashes",
-    primary_key="collision_id",
-    indexed_columns=("crash_date",),
+    primary_key=("collision_id",),
+    indexes=(("crash_date",),),
     columns=(
         Column("collision_id", INTEGER, to_int, "Collision Id"),
         Column("report_number", TEXT, to_text, "Report Number"),
@@ -258,11 +284,15 @@ CRASHES = Table(
 
 PARTIES = Table(
     name="parties",
-    primary_key="party_id",
+    primary_key=("party_id",),
     # Indexed but not an enforced foreign key: cross-year reports leave real
     # rows pointing at collision ids that live in another year's file, and
     # enforcement would reject them.
-    indexed_columns=("collision_id",),
+    #
+    # The index covers party_number too, because (collision_id, party_number)
+    # is how injured_witness_passengers names the party a person was with.
+    # Lookups by collision_id alone still use it.
+    indexes=(("collision_id", "party_number"),),
     columns=(
         Column("party_id", INTEGER, to_int, "PartyId"),
         Column("collision_id", INTEGER, to_int, "CollisionId"),
@@ -324,7 +354,10 @@ PARTIES = Table(
 # off a header --- hence no source_header here.
 VEHICLES = Table(
     name="vehicles",
-    indexed_columns=("collision_id",),
+    # The one table invented here rather than inherited, so it has to declare
+    # its own identity: a party has at most one vehicle per number.
+    primary_key=("party_id", "vehicle_number"),
+    indexes=(("collision_id",),),
     columns=(
         Column("party_id", INTEGER, to_int),
         Column("collision_id", INTEGER, to_int),
@@ -369,8 +402,10 @@ VEHICLE_GROUP_HEADERS: tuple[Mapping[str, str], ...] = (
 
 INJURED_WITNESS_PASSENGERS = Table(
     name="injured_witness_passengers",
-    primary_key="injured_wit_pass_id",
-    indexed_columns=("collision_id",),
+    primary_key=("injured_wit_pass_id",),
+    # Covers party_number for the same reason parties does: it is the other
+    # half of the documented link between a person and their party.
+    indexes=(("collision_id", "party_number"),),
     columns=(
         Column("injured_wit_pass_id", INTEGER, to_int, "InjuredWitPassId"),
         Column("collision_id", INTEGER, to_int, "CollisionId"),
