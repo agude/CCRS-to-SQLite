@@ -149,8 +149,14 @@ CRASHES = Table(
         Column("crash_time_description", TEXT, to_time_description, "Crash Time Description"),
         Column("beat", TEXT, to_text, "Beat"),
         Column("city_id", INTEGER, to_int, "City Id"),
-        Column("city_code", INTEGER, to_int, "City Code"),
+        # A zero-padded four-character code, not a number: 34,305 of the
+        # 400,215 rows in the 2025 file start with a zero ('0109' is Oakland).
+        # Storing it as INTEGER drops the padding and breaks every join
+        # against a published city or NCIC code list. `ncic_code` shares this
+        # code space and is TEXT for the same reason.
+        Column("city_code", TEXT, to_text, "City Code"),
         Column("city_name", TEXT, to_text, "City Name"),
+        # Genuinely numeric: 1 to 58, never padded.
         Column("county_code", INTEGER, to_int, "County Code"),
         Column("city_is_active", INTEGER, to_bool, "City Is Active"),
         Column("city_is_incorporated", INTEGER, to_bool, "City Is Incorporated"),

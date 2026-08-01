@@ -213,6 +213,31 @@ def test_convert_row_types_the_values():
     assert values["party_number"] is None
 
 
+@pytest.mark.parametrize(
+    ("column_name", "source_header", "cell"),
+    [
+        ("city_code", "City Code", "0109"),
+        ("ncic_code", "NCIC Code", "0109"),
+        ("beat", "Beat", "027"),
+    ],
+)
+def test_zero_padded_codes_keep_their_padding(column_name, source_header, cell):
+    """These are fixed-width codes, not numbers; INTEGER would drop the leading zero."""
+    header_positions = index_header_row(read_real_header_row("crashes"), "crashes")
+    positions = column_positions(CRASHES, header_positions)
+    row = [""] * len(header_positions)
+    row[header_positions[normalize_header(source_header)]] = cell
+
+    values = dict(zip(CRASHES.column_names, convert_row(CRASHES, row, positions), strict=True))
+
+    assert values[column_name] == cell
+
+
+def test_county_code_stays_numeric():
+    """It runs 1 to 58 and is never padded, so it is a number rather than a code."""
+    assert CRASHES.column("county_code").sql_type == "INTEGER"
+
+
 def test_convert_row_names_the_column_that_failed():
     header_positions = index_header_row(read_real_header_row("crashes"), "crashes")
     positions = column_positions(CRASHES, header_positions)
