@@ -36,6 +36,11 @@ adheres to [Semantic Versioning][semver].
 - The output file is built under a temporary name and renamed into place on
   success; an existing database is never overwritten.
 
+- `PRAGMA user_version` records the schema version, and `metadata.record_type`
+  names which of the two kinds each log row is.
+- Every source file is checked for existence and readability before any
+  loading starts.
+
 ### Not yet implemented
 
 - Directory mode (`ccrs_to_sqlite DATA_DIR`), which is the planned primary

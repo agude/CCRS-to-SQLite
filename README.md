@@ -78,9 +78,13 @@ Five `STRICT` tables, all column names snake_case:
 |---|---|
 | `crashes` | one row per crash, keyed by `collision_id` |
 | `parties` | one row per party, keyed by `party_id` |
-| `vehicles` | one row per vehicle, 0–2 per party |
+| `vehicles` | one row per vehicle, 0–2 per party, keyed by `(party_id, vehicle_number)` |
 | `injured_witness_passengers` | one row per injured person, witness, or passenger |
-| `metadata` | one row per file loaded, plus one per table for orphan counts |
+| `metadata` | a log of the load; see below |
+
+`PRAGMA user_version` holds the schema version, so a consumer can check the
+file's shape without introspecting it. That is a different question from
+`metadata.converter_version`, which records which release wrote the file.
 
 Notable conversions:
 
@@ -100,6 +104,42 @@ Foreign keys are indexed but not enforced. Reports straddling a year boundary
 genuinely put a party in one file and its crash in another, so enforcement
 would reject valid rows; the orphans are counted and reported instead.
 
+### `metadata`
+
+A log with two kinds of row, told apart by `record_type`:
+
+| `record_type` | Fills |
+|---|---|
+| `file_load` | `source_file`, `year_label`, `rows_read`, `rows_loaded`, `rows_skipped` |
+| `orphan_count` | `orphan_rows` — a property of the finished database, not of any one file |
+
+Both fill `table_name`, `converter_version`, and `loaded_at_utc`. That last
+one is UTC; every other timestamp in the database is California local time,
+as the source supplies it.
+
+### Caveats worth knowing before you query
+
+Measured on the 2025 file:
+
+- **22.3% of crashes have no coordinates** (89,158 of 400,215). Any map or
+  spatial aggregate silently covers about three quarters of the data.
+- **884 longitudes are positive**, i.e. sign-flipped into China, and roughly
+  1,600 fall outside California altogether. Both are stored as they came.
+- **`crash_time` disagrees with `crash_time_description` on 2.2% of rows**,
+  and `00:00:00` is the single most common value in `crash_time` — 3,731 of
+  those are rows where `crash_time_description` is `2500`, the source's code
+  for an unknown time. Treat `crash_time` as unreliable and prefer
+  `crash_time_description`.
+- **`is_deleted` is false on every row.** The published files carry only the
+  current version of each report, so the column is present for fidelity and
+  tells you nothing.
+- `special_condition` and `road_condition_1` are multi-valued free text, not
+  enums.
+
+Indexes cover the documented relationships, not every column you might filter
+on. Adding your own is one statement against a local file, and the semver
+policy below does not treat that as a schema change.
+
 ## Development
 
 ```bash
@@ -109,6 +149,23 @@ just check          # lint + type-check + test
 ```
 
 `just --list` shows every recipe. See `AGENTS.md` for repo conventions.
+
+## Versioning
+
+From v1.0 the schema is frozen: anything that changes the data stored for
+input that already converted waits for the next major release. Renaming a
+column, retyping one, or changing how a value is normalized all count.
+
+Two things deliberately do not count, because they change how the database is
+reached rather than what it says:
+
+- adding or removing an index
+- `PRAGMA user_version`, which is bumped precisely so consumers can see a
+  schema change coming
+
+Without that carve-out, noticing a missing index a year after release would
+force a major version, which is a good way to guarantee the index never gets
+added.
 
 ## License
 
