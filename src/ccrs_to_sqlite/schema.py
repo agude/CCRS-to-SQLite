@@ -90,6 +90,14 @@ class Table:
     def column_names(self) -> tuple[str, ...]:
         return tuple(column.name for column in self.columns)
 
+    def column(self, name: str) -> Column:
+        """Return the named column, or raise KeyError."""
+        for column in self.columns:
+            if column.name == name:
+                return column
+
+        raise KeyError(f"{self.name} has no column named {name!r}")
+
     def create_table_sql(self) -> str:
         """Return the CREATE TABLE statement for this table.
 
