@@ -30,12 +30,13 @@ from ccrs_to_sqlite.converters import (
     to_int,
     to_real,
     to_text,
-    to_time,
     to_time_description,
+    to_time_of_day,
 )
 
 SQLiteValue = str | int | float | None
 Converter = Callable[[str], SQLiteValue]
+PairedConverter = Callable[[str, str], SQLiteValue]
 
 INTEGER = "INTEGER"
 REAL = "REAL"
@@ -70,11 +71,40 @@ class Column:
     source_header: str | None = None
 
     @property
-    def normalized_source_header(self) -> str | None:
+    def normalized_source_headers(self) -> tuple[str, ...]:
         if self.source_header is None:
-            return None
+            return ()
 
-        return normalize_header(self.source_header)
+        return (normalize_header(self.source_header),)
+
+    def convert_cells(self, row: Sequence[str], positions: Sequence[int]) -> SQLiteValue:
+        return self.convert(row[positions[0]])
+
+
+@dataclass(frozen=True)
+class PairedColumn:
+    """A column resolved from two source cells rather than one.
+
+    CCRS answers "when did this happen" twice and incompletely: a merged
+    DateTime column documented as holding only the date, and a separate
+    four-character time field. Neither alone is right, so the columns that
+    resolve a time name both and let a converter reconcile them.
+    """
+
+    name: str
+    sql_type: str
+    resolve: PairedConverter
+    source_headers: tuple[str, str]
+
+    @property
+    def normalized_source_headers(self) -> tuple[str, ...]:
+        return tuple(normalize_header(header) for header in self.source_headers)
+
+    def convert_cells(self, row: Sequence[str], positions: Sequence[int]) -> SQLiteValue:
+        return self.resolve(row[positions[0]], row[positions[1]])
+
+
+AnyColumn = Column | PairedColumn
 
 
 @dataclass(frozen=True)
@@ -82,7 +112,7 @@ class Table:
     """One output table."""
 
     name: str
-    columns: tuple[Column, ...]
+    columns: tuple[AnyColumn, ...]
     # One column for the tables the source keys itself; several for a table
     # whose identity is a combination, as `vehicles` is.
     primary_key: tuple[str, ...] = ()
@@ -107,7 +137,7 @@ class Table:
         name = self.primary_key[0]
         return name if self.column(name).sql_type == INTEGER else None
 
-    def column(self, name: str) -> Column:
+    def column(self, name: str) -> AnyColumn:
         """Return the named column, or raise KeyError."""
         for column in self.columns:
             if column.name == name:
@@ -167,11 +197,21 @@ CRASHES = Table(
         Column("report_version", INTEGER, to_int, "Report Version"),
         Column("is_preliminary", INTEGER, to_bool, "Is Preliminary"),
         Column("ncic_code", TEXT, to_text, "NCIC Code"),
-        # The one source column that becomes two: a date and a time that sort
-        # and filter independently, which is the whole point of leaving
-        # `M/D/YYYY H:MM:SS AM` behind.
+        # `Crash Date Time` is documented as "the date when the collision
+        # occurred", and that is all it is taken for: the date. The time it
+        # also carries is undocumented and reads midnight wherever none was
+        # recorded, so crash_time is resolved from both that column and the
+        # dedicated four-character field, which is what the data dictionary
+        # actually defines as the time of the crash.
         Column("crash_date", TEXT, to_date, "Crash Date Time"),
-        Column("crash_time", TEXT, to_time, "Crash Date Time"),
+        PairedColumn(
+            "crash_time",
+            TEXT,
+            to_time_of_day,
+            ("Crash Date Time", "Crash Time Description"),
+        ),
+        # Kept raw beside the resolved column, the way make_raw sits beside
+        # make: every value crash_time settles on stays auditable.
         Column("crash_time_description", TEXT, to_time_description, "Crash Time Description"),
         Column("beat", TEXT, to_text, "Beat"),
         Column("city_id", INTEGER, to_int, "City Id"),
@@ -267,7 +307,16 @@ CRASHES = Table(
         Column("chp_555_version", INTEGER, to_int, "CHP555Version"),
         # The source misspells this header; the database does not.
         Column("is_additional_object_struck", INTEGER, to_bool, "IsAdditonalObjectStruck"),
-        Column("notification_date", TEXT, to_datetime, "NotificationDate"),
+        # The same pairing as the crash time, and the only other one in the
+        # dataset. Splitting the merged column keeps it from asserting a
+        # midnight notification on the 4,887 rows that never recorded a time.
+        Column("notification_date", TEXT, to_date, "NotificationDate"),
+        PairedColumn(
+            "notification_time",
+            TEXT,
+            to_time_of_day,
+            ("NotificationDate", "NotificationTimeDescription"),
+        ),
         Column(
             "notification_time_description",
             TEXT,
@@ -473,10 +522,10 @@ ALL_TABLES = (CRASHES, PARTIES, VEHICLES, INJURED_WITNESS_PASSENGERS, METADATA)
 def source_headers(*tables: Table) -> frozenset[str]:
     """Return the normalized headers the given tables read, ignoring computed columns."""
     return frozenset(
-        column.normalized_source_header
+        header
         for table in tables
         for column in table.columns
-        if column.normalized_source_header is not None
+        for header in column.normalized_source_headers
     )
 
 
@@ -528,29 +577,40 @@ def check_expected_headers(
         raise ValueError(f"{source_name}: missing expected headers: {', '.join(missing)}")
 
 
-def column_positions(table: Table, header_positions: Mapping[str, int]) -> tuple[int, ...]:
-    """Return the source cell index for each of the table's columns, in order."""
+def column_positions(
+    table: Table,
+    header_positions: Mapping[str, int],
+) -> tuple[tuple[int, ...], ...]:
+    """Return the source cell indexes each of the table's columns reads, in order.
+
+    Resolved once per file so that per-row work stays plain indexing. Most
+    columns read one cell; a PairedColumn reads two.
+    """
     positions = []
     for column in table.columns:
-        header = column.normalized_source_header
-        if header is None:
+        headers = column.normalized_source_headers
+        if not headers:
             raise ValueError(f"{table.name}.{column.name} is computed, not read from a header")
 
-        positions.append(header_positions[header])
+        positions.append(tuple(header_positions[header] for header in headers))
 
     return tuple(positions)
 
 
-def convert_row(table: Table, row: Sequence[str], positions: Sequence[int]) -> list[SQLiteValue]:
+def convert_row(
+    table: Table,
+    row: Sequence[str],
+    positions: Sequence[Sequence[int]],
+) -> list[SQLiteValue]:
     """Convert one raw CSV row into the values to bind for `table`.
 
     A converter failure is re-raised naming the column, since "expected an
     integer, got 'T602'" is not much use across 74 of them.
     """
     values: list[SQLiteValue] = []
-    for column, position in zip(table.columns, positions, strict=True):
+    for column, cell_positions in zip(table.columns, positions, strict=True):
         try:
-            values.append(column.convert(row[position]))
+            values.append(column.convert_cells(row, cell_positions))
         except ValueError as error:
             raise ValueError(f"{table.name}.{column.name}: {error}") from None
 

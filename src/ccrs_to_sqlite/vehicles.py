@@ -19,6 +19,7 @@ from ccrs_to_sqlite.make_map import normalize_make
 from ccrs_to_sqlite.schema import (
     VEHICLE_GROUP_HEADERS,
     VEHICLES,
+    Column,
     SQLiteValue,
     normalize_header,
 )
@@ -32,7 +33,11 @@ COLLISION_ID_HEADER = "CollisionId"
 # Filled from the party row rather than from a vehicle group.
 INHERITED_COLUMNS = ("party_id", "collision_id", "vehicle_number")
 
-VEHICLE_COLUMNS_BY_NAME = {column.name: column for column in VEHICLES.columns}
+# Every vehicles column reads a single cell, so the paired kind cannot
+# appear here and the narrowing is free.
+VEHICLE_COLUMNS_BY_NAME = {
+    column.name: column for column in VEHICLES.columns if isinstance(column, Column)
+}
 
 
 @dataclass(frozen=True)

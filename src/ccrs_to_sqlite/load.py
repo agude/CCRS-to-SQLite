@@ -407,7 +407,7 @@ class _SourceFilePlan:
 
     kind: SourceKind
     field_count: int
-    positions: tuple[int, ...]
+    positions: tuple[tuple[int, ...], ...]
     primary_key_name: str | None
     primary_key_index: int | None
     vehicle_plan: VehiclePlan | None

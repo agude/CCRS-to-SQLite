@@ -9,6 +9,7 @@ from ccrs_to_sqlite.converters import (
     to_text,
     to_time,
     to_time_description,
+    to_time_of_day,
 )
 
 ALL_CONVERTERS = [
@@ -122,6 +123,55 @@ def test_to_date_and_to_time_split_one_source_datetime():
 def test_datetime_converters_reject_anything_but_the_source_format(converter, cell):
     with pytest.raises(ValueError, match="expected a M/D/YYYY"):
         converter(cell)
+
+
+@pytest.mark.parametrize(
+    ("merged", "described", "expected", "why"),
+    [
+        # The overwhelming majority: both sources agree.
+        ("1/14/2025 7:50:00 AM", "0750", "07:50:00", "they agree"),
+        # 3,189 rows in 2025: the merged column is a midnight placeholder and
+        # the dedicated field holds the real time.
+        ("1/14/2025 12:00:00 AM", "0750", "07:50:00", "the description wins"),
+        # 439 rows: a genuine midnight, which the description states.
+        ("1/14/2025 12:00:00 AM", "0000", "00:00:00", "a real midnight is kept"),
+        # 1,603 rows: both hold real times that differ. The dedicated field is
+        # the one the data dictionary defines as the time of the crash.
+        ("1/14/2025 7:50:00 AM", "1520", "15:20:00", "the description wins"),
+        # 77 rows: the description says unknown, the merged column does not.
+        ("1/14/2025 7:50:00 AM", "2500", "07:50:00", "the merged column rescues it"),
+        # 5 rows: a description typo, with a usable merged column behind it.
+        ("1/14/2025 7:50:00 AM", "2559", "07:50:00", "the merged column rescues it"),
+        # Unpadded, as the data dictionary warns.
+        ("1/14/2025 12:00:00 AM", "750", "07:50:00", "leading zeros are optional"),
+    ],
+)
+def test_to_time_of_day_resolves_the_two_sources(merged, described, expected, why):
+    assert to_time_of_day(merged, described) == expected, why
+
+
+@pytest.mark.parametrize(
+    ("merged", "described"),
+    [
+        # 3,731 rows: neither source recorded a time. Reading the merged
+        # column alone would assert midnight for every one of them.
+        ("1/14/2025 12:00:00 AM", "2500"),
+        # 16 rows: a description typo with nothing usable behind it.
+        ("1/14/2025 12:00:00 AM", "2501"),
+        ("1/14/2025 12:00:00 AM", ""),
+        ("", "2500"),
+        ("", ""),
+    ],
+)
+def test_to_time_of_day_refuses_to_invent_a_midnight(merged, described):
+    assert to_time_of_day(merged, described) is None
+
+
+def test_to_time_of_day_rejects_impossible_clock_readings():
+    """2500 is the unknown-time marker; 2501 and friends are typos. Neither names a time."""
+    assert to_time_of_day("", "2500") is None
+    assert to_time_of_day("", "1360") is None
+    assert to_time_of_day("", "2400") is None
 
 
 @pytest.mark.parametrize(

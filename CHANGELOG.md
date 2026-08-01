@@ -24,6 +24,11 @@ adheres to [Semantic Versioning][semver].
   2025 header rows. Unknown and missing headers are both fatal.
 - Value converters producing ISO dates and times, `INTEGER` booleans, and
   `NULL` for empty cells, with whitespace stripped everywhere.
+- Times of day are resolved from both source columns that describe them —
+  the merged `DateTime` and the dedicated four-character field — rather than
+  read off the merged column, whose time half is midnight wherever no time
+  was recorded. `crash_time` and `notification_time` are `NULL` when neither
+  source names a time, instead of asserting a midnight.
 - The two inline vehicle groups on a party row are lifted into `vehicles`,
   with `make_raw` kept verbatim beside a normalized `make` that is `NULL`
   when unmapped.

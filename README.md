@@ -89,8 +89,12 @@ file's shape without introspecting it. That is a different question from
 Notable conversions:
 
 - `Crash Date Time` becomes `crash_date` (`YYYY-MM-DD`) and `crash_time`
-  (`HH:MM:SS`); the other timestamps become ISO datetimes in one column. ISO
-  text sorts correctly and works with SQLite's date functions.
+  (`HH:MM:SS`), and `NotificationDate` splits the same way. `PreparedDate`,
+  `ReviewedDate`, `CreatedDate` and `ModifiedDate` become ISO datetimes in
+  one column. ISO text sorts correctly and works with SQLite's date
+  functions.
+- **Times are resolved from two source columns, not one.** See below — this
+  is the one place the converter does more than translate a single cell.
 - `True`/`False` become `INTEGER` 0/1, and empty stays `NULL`. Fields that
   look boolean but are not — `hit_run` (`F`/`M`), `dispatch_notified`
   (`Yes`/`No`/`NotApplicable`) — stay `TEXT`.
@@ -103,6 +107,45 @@ Notable conversions:
 Foreign keys are indexed but not enforced. Reports straddling a year boundary
 genuinely put a party in one file and its crash in another, so enforcement
 would reject valid rows; the orphans are counted and reported instead.
+
+### How times of day are resolved
+
+CCRS answers "when did this happen" twice, and neither answer alone is right.
+
+`Crash Date Time` is a merged DateTime, but the data dictionary defines it as
+*"the date when the collision occurred (YYYYMMDD)"* — a date. The time it also
+carries is undocumented, and reads midnight on every row where no time was
+recorded. The field the dictionary actually defines as the time of the crash
+is a separate four-character 24-hour string, shipped as
+`Crash Time Description`, whose marker for an unknown time is `2500`.
+
+So `crash_time` is resolved from both:
+
+1. use `Crash Time Description` when it holds a real clock reading;
+2. otherwise fall back to the time in `Crash Date Time`, unless that is
+   midnight;
+3. otherwise `NULL`.
+
+Measured on the 2025 file, out of 400,215 crashes:
+
+| Case | Rows | Resolved to |
+|---|---|---|
+| both sources agree | 391,155 | that time |
+| merged column is a midnight placeholder, description has the time | 3,189 | the description |
+| both hold real times that differ | 1,603 | the description |
+| genuine midnight, stated as `0000` | 439 | `00:00:00` |
+| description says `2500`, merged column has a real time | 77 | the merged column |
+| neither recorded a time | 3,747 | `NULL` |
+
+Reading the merged column alone would have asserted midnight for 3,731 crashes
+that never recorded one, making `00:00:00` the most common time in the
+database by a factor of three. Reading only the description would have thrown
+away the 77 rows it has no answer for.
+
+`crash_time_description` is kept raw beside `crash_time`, so every value the
+resolver settled on stays auditable — the same arrangement as `make_raw` and
+`make`. `notification_date` / `notification_time` work identically; those are
+the only two such pairings in the dataset.
 
 ### `metadata`
 
@@ -125,11 +168,8 @@ Measured on the 2025 file:
   spatial aggregate silently covers about three quarters of the data.
 - **884 longitudes are positive**, i.e. sign-flipped into China, and roughly
   1,600 fall outside California altogether. Both are stored as they came.
-- **`crash_time` disagrees with `crash_time_description` on 2.2% of rows**,
-  and `00:00:00` is the single most common value in `crash_time` — 3,731 of
-  those are rows where `crash_time_description` is `2500`, the source's code
-  for an unknown time. Treat `crash_time` as unreliable and prefer
-  `crash_time_description`.
+- **`crash_time` is `NULL` on 3,747 rows** (0.94%) because no time was
+  recorded for them. That is deliberate — see the section below.
 - **`is_deleted` is false on every row.** The published files carry only the
   current version of each report, so the column is present for fidelity and
   tells you nothing.

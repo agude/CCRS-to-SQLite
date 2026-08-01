@@ -5,7 +5,7 @@ import pytest
 
 from ccrs_to_sqlite.make_map import Make
 from ccrs_to_sqlite.open_record import open_source_file
-from ccrs_to_sqlite.schema import PARTIES, VEHICLES, index_header_row
+from ccrs_to_sqlite.schema import PARTIES, VEHICLES, index_header_row, normalize_header
 from ccrs_to_sqlite.vehicles import (
     COLLISION_ID_HEADER,
     INHERITED_COLUMNS,
@@ -41,8 +41,12 @@ def as_dictionary(row):
 
 def test_the_inherited_headers_match_the_ones_parties_uses():
     """These are read here but defined on the parties table; they must not drift apart."""
-    assert PARTIES.column("party_id").source_header == PARTY_ID_HEADER
-    assert PARTIES.column("collision_id").source_header == COLLISION_ID_HEADER
+    assert PARTIES.column("party_id").normalized_source_headers == (
+        normalize_header(PARTY_ID_HEADER),
+    )
+    assert PARTIES.column("collision_id").normalized_source_headers == (
+        normalize_header(COLLISION_ID_HEADER),
+    )
 
 
 def test_a_party_with_no_vehicle_produces_no_rows(plan, header_positions):

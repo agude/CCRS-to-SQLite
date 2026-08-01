@@ -76,22 +76,50 @@ def test_column_names_are_unique_within_a_table():
         assert len(set(table.column_names)) == len(table.column_names), table.name
 
 
-def test_source_headers_are_unique_within_a_table():
-    """Only Crash Date Time may feed more than one column, and it feeds exactly two."""
-    headers = [
-        column.source_header for column in CRASHES.columns if column.source_header is not None
-    ]
-
+def test_only_the_paired_time_sources_feed_more_than_one_column():
+    """A header read twice should mean a deliberate pairing, not an accident."""
+    headers = [header for column in CRASHES.columns for header in column.normalized_source_headers]
     repeated = {header for header in headers if headers.count(header) > 1}
-    assert repeated == {"Crash Date Time"}
+
+    assert repeated == {
+        "crash date time",
+        "crash time description",
+        "notificationdate",
+        "notificationtimedescription",
+    }
 
 
-def test_crash_date_time_splits_into_a_date_and_a_time():
-    split_columns = [
-        column.name for column in CRASHES.columns if column.source_header == "Crash Date Time"
-    ]
+@pytest.mark.parametrize(
+    ("date_column", "time_column", "description_column", "merged", "described"),
+    [
+        (
+            "crash_date",
+            "crash_time",
+            "crash_time_description",
+            "Crash Date Time",
+            "Crash Time Description",
+        ),
+        (
+            "notification_date",
+            "notification_time",
+            "notification_time_description",
+            "NotificationDate",
+            "NotificationTimeDescription",
+        ),
+    ],
+)
+def test_a_merged_datetime_becomes_a_date_a_resolved_time_and_the_raw_description(
+    date_column, time_column, description_column, merged, described
+):
+    """The date comes from the merged column; the time needs both sources to settle."""
+    merged_header, described_header = normalize_header(merged), normalize_header(described)
 
-    assert split_columns == ["crash_date", "crash_time"]
+    assert CRASHES.column(date_column).normalized_source_headers == (merged_header,)
+    assert CRASHES.column(time_column).normalized_source_headers == (
+        merged_header,
+        described_header,
+    )
+    assert CRASHES.column(description_column).normalized_source_headers == (described_header,)
 
 
 def test_computed_tables_read_no_headers_directly():
@@ -210,7 +238,7 @@ def test_column_positions_follows_the_header_row_not_the_column_order():
     )
     header_positions = index_header_row([" Beat", "\tCollision Id"], "example.csv")
 
-    assert column_positions(table, header_positions) == (1, 0)
+    assert column_positions(table, header_positions) == ((1,), (0,))
 
 
 def test_column_positions_refuses_a_computed_table():

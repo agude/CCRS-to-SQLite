@@ -29,6 +29,11 @@ ISO_TIME_FORMAT = "%H:%M:%S"
 # `Crash Time Description` and friends are 24-hour `HHMM` strings that the
 # data dictionary warns may arrive without their leading zero.
 TIME_DESCRIPTION_WIDTH = 4
+MAX_HOUR = 23
+MAX_MINUTE = 59
+
+# The time a merged DateTime column reads when no time was recorded.
+MIDNIGHT = "00:00:00"
 
 BOOLEAN_WORDS = {"true": 1, "false": 0}
 
@@ -129,6 +134,51 @@ def to_time_description(value: str) -> str | None:
         return unpunctuated.zfill(TIME_DESCRIPTION_WIDTH)
 
     return stripped
+
+
+def to_time_of_day(datetime_value: str, description_value: str) -> str | None:
+    """Resolve a time of day from the two half-answers CCRS gives for one.
+
+    The dataset merges a date and a time into one DateTime column, then
+    documents that column as "the date when the collision occurred" and puts
+    the time it actually stands behind in a separate four-character field.
+    The merged column's time half reads midnight on rows where no time was
+    recorded, so taking it at face value invents a time for them: in the 2025
+    file that fabricates 3,731 midnight crashes, making 00:00:00 the single
+    most common crash time in the database.
+
+    Reading only the dedicated field is not right either --- on 77 rows it
+    holds the unknown-time marker while the merged column carries a real
+    time. So prefer the dedicated field, fall back to the merged column when
+    that field says nothing usable, and return None rather than assert a
+    midnight neither of them meant.
+    """
+    described = _time_from_description(description_value)
+    if described is not None:
+        return described
+
+    merged = to_time(datetime_value)
+    if merged is not None and merged != MIDNIGHT:
+        return merged
+
+    return None
+
+
+def _time_from_description(value: str) -> str | None:
+    """Read a four-character 24-hour time as ``HH:MM:SS``. None if it is not one.
+
+    Rejects the unknown-time marker ``2500`` and the handful of neighbouring
+    typos (``2501``, ``2559``) along with it, since neither names a time.
+    """
+    padded = to_time_description(value)
+    if padded is None or not padded.isdigit() or len(padded) != TIME_DESCRIPTION_WIDTH:
+        return None
+
+    hours, minutes = int(padded[:2]), int(padded[2:])
+    if hours > MAX_HOUR or minutes > MAX_MINUTE:
+        return None
+
+    return f"{hours:02d}:{minutes:02d}:00"
 
 
 def _parse_source_datetime(value: str) -> datetime | None:
