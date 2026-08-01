@@ -16,6 +16,7 @@ and silently picking one hides the corruption.
 from __future__ import annotations
 
 import csv
+import re
 import sqlite3
 import sys
 from collections.abc import Iterator, Sequence
@@ -91,6 +92,19 @@ SOURCE_KINDS = (CRASHES_SOURCE, PARTIES_SOURCE, INJURED_SOURCE)
 
 # Tables whose collision_id may point at a crash in another year's file.
 ORPHAN_CHECKED_TABLES = (PARTIES, VEHICLES, INJURED_WITNESS_PASSENGERS)
+
+
+# The dataset names its files `crashes_2025.csv`, so the year is the tail of
+# the stem. Anything else is unlabelled rather than an error: a renamed file
+# still loads, it just says less about itself in the metadata.
+_YEAR_SUFFIX = re.compile(r"_(\d{4})$")
+
+
+def year_label_from(path: Path) -> str | None:
+    """Return the four-digit year a source filename ends with, if it has one."""
+    stem = path.name.split(".")[0]
+    match = _YEAR_SUFFIX.search(stem)
+    return match.group(1) if match else None
 
 
 class DuplicatePrimaryKeyError(Exception):
@@ -213,8 +227,9 @@ def apply_bulk_load_pragmas(connection: sqlite3.Connection) -> None:
         connection.execute(pragma)
 
 
-def create_indexes(connection: sqlite3.Connection, progress: TextIO = sys.stderr) -> None:
+def create_indexes(connection: sqlite3.Connection, progress: TextIO | None = None) -> None:
     """Build the indexes, after the data is in place rather than during the load."""
+    progress = _default_progress(progress)
     for table in ALL_TABLES:
         for statement in table.create_index_sql():
             print(f"indexing: {statement}", file=progress)
@@ -229,9 +244,10 @@ def load_source_file(
     strict: bool = False,
     parse_error: str = "strict",
     guard: PrimaryKeyGuard | None = None,
-    progress: TextIO = sys.stderr,
+    progress: TextIO | None = None,
 ) -> LoadReport:
     """Read one source file into its table, returning what happened."""
+    progress = _default_progress(progress)
     report = LoadReport(source_file=path.name, table_name=kind.table.name)
     print(f"{path.name}: reading into {kind.table.name}", file=progress)
 
@@ -424,6 +440,15 @@ def _warn_skipped_row(
         raise ValueError(message) from None
 
     print(f"warning: skipping row, {message}", file=progress)
+
+
+def _default_progress(progress: TextIO | None) -> TextIO:
+    """Resolve the progress stream at call time.
+
+    Reading sys.stderr in a default argument would freeze whatever it was at
+    import, which breaks anything that replaces the stream afterwards.
+    """
+    return sys.stderr if progress is None else progress
 
 
 def _chunked(values: Sequence[SQLiteValue], size: int) -> Iterator[Sequence[SQLiteValue]]:
