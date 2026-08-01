@@ -1,3 +1,4 @@
+import gzip
 import io
 import sqlite3
 from contextlib import closing
@@ -140,6 +141,55 @@ def test_convert_counts_and_reports_orphans(tmp_path, sources, progress):
         ("vehicles", 0),
     ]
     assert "1 parties rows reference a crash that is not in this database" in progress.getvalue()
+
+
+def gzipped(path):
+    """Replace a source file with its gzipped twin, keeping the .csv name."""
+    compressed = path.with_suffix(".csv.gz")
+    compressed.write_bytes(gzip.compress(path.read_bytes()))
+    path.unlink()
+    return compressed
+
+
+def test_gzipped_sources_convert_end_to_end(tmp_path, sources, progress):
+    """open_source_file is unit-tested, but nothing proved a .csv.gz reached the database."""
+    database = tmp_path / "ccrs.sqlite3"
+    compressed = SourceFiles(
+        crashes=tuple(gzipped(path) for path in sources.crashes),
+        parties=tuple(gzipped(path) for path in sources.parties),
+        injured=tuple(gzipped(path) for path in sources.injured),
+    )
+
+    convert(compressed, database, progress=progress)
+
+    assert rows(database, "SELECT COUNT(*) FROM crashes") == [(2,)]
+    assert rows(database, "SELECT COUNT(*) FROM parties") == [(3,)]
+    assert rows(database, "SELECT COUNT(*) FROM vehicles") == [(3,)]
+    assert rows(database, "SELECT COUNT(*) FROM injured_witness_passengers") == [(2,)]
+
+
+def test_a_gzipped_file_still_named_csv_converts(tmp_path, sources, progress):
+    """Compression is sniffed from the bytes, so the wrong extension is not fatal."""
+    database = tmp_path / "ccrs.sqlite3"
+    misnamed = sources.crashes[0]
+    misnamed.write_bytes(gzip.compress(misnamed.read_bytes()))
+
+    convert(SourceFiles(crashes=(misnamed,)), database, progress=progress)
+
+    assert rows(database, "SELECT COUNT(*) FROM crashes") == [(2,)]
+
+
+def test_a_gzipped_source_is_logged_under_its_own_name(tmp_path, sources, progress):
+    database = tmp_path / "ccrs.sqlite3"
+    compressed = gzipped(sources.crashes[0])
+
+    convert(SourceFiles(crashes=(compressed,)), database, progress=progress)
+
+    logged = rows(
+        database,
+        f"SELECT source_file, year_label FROM metadata WHERE record_type = '{FILE_LOAD_RECORD}'",
+    )
+    assert logged == [("crashes_2025.csv.gz", "2025")]
 
 
 def test_convert_refuses_to_overwrite_an_existing_database(tmp_path, sources, progress):
