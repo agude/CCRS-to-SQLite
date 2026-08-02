@@ -34,6 +34,14 @@ test *args:
 # Everything CI runs
 check: lint type-check test
 
+# Rewrite the checked-in DDL snapshot after a deliberate schema change. The
+# diff it produces is the review; nothing else in the suite catches a rename.
+schema-snapshot:
+    uv run python -c "import sys; sys.path.insert(0, 'tests'); \
+      from test_schema import SCHEMA_SNAPSHOT, rendered_schema; \
+      SCHEMA_SNAPSHOT.write_text(rendered_schema(), encoding='utf-8')"
+    @echo "Wrote tests/data/schema.sql. Review the diff before committing."
+
 # Build the package
 build:
     uv build

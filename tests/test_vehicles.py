@@ -10,6 +10,7 @@ from ccrs_to_sqlite.vehicles import (
     COLLISION_ID_HEADER,
     INHERITED_COLUMNS,
     PARTY_ID_HEADER,
+    VEHICLE_COLUMNS_BY_NAME,
     plan_vehicles,
     vehicle_rows,
 )
@@ -170,3 +171,12 @@ def test_the_plan_covers_every_column_the_groups_are_responsible_for(plan):
 
     for group in plan.groups:
         assert set(group.positions) == expected
+
+
+def test_the_narrowed_column_lookup_still_covers_every_vehicles_column():
+    """It filters on isinstance(column, Column), and nothing enforces the premise.
+
+    A PairedColumn added to VEHICLES would silently drop out of the dict and
+    then KeyError inside `_vehicle_row`, once per party row.
+    """
+    assert set(VEHICLE_COLUMNS_BY_NAME) == set(VEHICLES.column_names)

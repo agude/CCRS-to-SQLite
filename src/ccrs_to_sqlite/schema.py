@@ -5,7 +5,7 @@ reads and the converter that types it. The loader does nothing but walk these
 lists, so this module is the single place where "what does the database look
 like" is answered.
 
-Two rules from plan.md shape everything here:
+Two rules shape everything here:
 
 * Mapping is header-driven, never positional. The source header rows are
   filthy --- literal tabs after commas, leading spaces, CRLF endings, a
@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from ccrs_to_sqlite.converters import (
     to_bool,
@@ -30,6 +31,7 @@ from ccrs_to_sqlite.converters import (
     to_int,
     to_real,
     to_text,
+    to_time,
     to_time_description,
     to_time_of_day,
 )
@@ -38,9 +40,17 @@ SQLiteValue = str | int | float | None
 Converter = Callable[[str], SQLiteValue]
 PairedConverter = Callable[[str, str], SQLiteValue]
 
-INTEGER = "INTEGER"
-REAL = "REAL"
-TEXT = "TEXT"
+# The three storage classes a STRICT table accepts here. Spelled as a Literal
+# so a typo is a type error rather than a CREATE TABLE failure at runtime.
+SQLType = Literal["INTEGER", "REAL", "TEXT"]
+
+INTEGER: SQLType = "INTEGER"
+REAL: SQLType = "REAL"
+TEXT: SQLType = "TEXT"
+
+# Stamped into PRAGMA user_version. Bump it whenever a column is added,
+# removed, renamed, or retyped, so a consumer can tell without introspecting.
+SCHEMA_VERSION = 1
 
 _WHITESPACE_RUN = re.compile(r"\s+")
 
@@ -56,6 +66,19 @@ def normalize_header(cell: str) -> str:
     return _WHITESPACE_RUN.sub(" ", cell).strip().lower()
 
 
+# A column's declared parent, spelled `table(column)`. Foreign keys here are
+# declared but never enforced: `PRAGMA foreign_keys` stays off, because a
+# report straddling a year boundary genuinely lands its parties in one file
+# and its crash in another, and enforcement would reject those real rows.
+#
+# Declaring them anyway costs nothing at load time and puts the relationships
+# in the file rather than only in the README --- Datasette, SQLite browsers
+# and every ORM read them out of `PRAGMA foreign_key_list`. It also has to
+# happen before the schema freezes: SQLite cannot add a REFERENCES clause to
+# an existing column without rebuilding the table.
+ForeignKey = str
+
+
 @dataclass(frozen=True)
 class Column:
     """One output column, and where its value comes from.
@@ -66,9 +89,11 @@ class Column:
     """
 
     name: str
-    sql_type: str
+    sql_type: SQLType
     convert: Converter
     source_header: str | None = None
+    not_null: bool = False
+    references: ForeignKey | None = None
 
     @property
     def normalized_source_headers(self) -> tuple[str, ...]:
@@ -92,9 +117,11 @@ class PairedColumn:
     """
 
     name: str
-    sql_type: str
+    sql_type: SQLType
     resolve: PairedConverter
     source_headers: tuple[str, str]
+    not_null: bool = False
+    references: ForeignKey | None = None
 
     @property
     def normalized_source_headers(self) -> tuple[str, ...]:
@@ -118,6 +145,12 @@ class Table:
     primary_key: tuple[str, ...] = ()
     # Each entry is one index, over one or more columns in order.
     indexes: tuple[tuple[str, ...], ...] = ()
+    # Table-level CHECK bodies, without the surrounding `CHECK (...)`. Used
+    # only where the constraint is cheap relative to the table: the fact
+    # tables carry tens of millions of rows and forty boolean columns each,
+    # and re-checking a property the converters already guarantee would be
+    # paid for on every insert forever.
+    check_constraints: tuple[str, ...] = ()
 
     @property
     def column_names(self) -> tuple[str, ...]:
@@ -152,16 +185,25 @@ class Table:
         types, and SQLite's default type affinity would happily store the
         string 'abc' in an INTEGER column.
         """
-        definitions = [
-            f"    {column.name} {column.sql_type}"
-            + (" PRIMARY KEY" if column.name == self.rowid_alias else "")
-            for column in self.columns
-        ]
+        definitions = [self._column_definition(column) for column in self.columns]
         if self.primary_key and self.rowid_alias is None:
             definitions.append(f"    PRIMARY KEY ({', '.join(self.primary_key)})")
 
+        definitions.extend(f"    CHECK ({check})" for check in self.check_constraints)
+
         body = ",\n".join(definitions)
         return f"CREATE TABLE {self.name} (\n{body}\n) STRICT"
+
+    def _column_definition(self, column: AnyColumn) -> str:
+        definition = f"    {column.name} {column.sql_type}"
+        if column.name == self.rowid_alias:
+            definition += " PRIMARY KEY"
+        if column.not_null:
+            definition += " NOT NULL"
+        if column.references is not None:
+            definition += f" REFERENCES {column.references}"
+
+        return definition
 
     def create_index_sql(self) -> list[str]:
         """Return the CREATE INDEX statements, run after loading rather than before.
@@ -210,9 +252,15 @@ CRASHES = Table(
             to_time_of_day,
             ("Crash Date Time", "Crash Time Description"),
         ),
-        # Kept raw beside the resolved column, the way make_raw sits beside
-        # make: every value crash_time settles on stays auditable.
+        # Both of the resolver's inputs are kept raw beside its output, the way
+        # make_raw sits beside make. Keeping only one of them would make the
+        # audit trail half a trail: crash_date discards the merged column's
+        # time half, so without crash_time_merged the value the resolver
+        # rejected on the 1,603 rows where the two disagree survives nowhere,
+        # and `crash_date || ' ' || crash_time` names a moment neither source
+        # stated with nothing left in the row to reveal it.
         Column("crash_time_description", TEXT, to_time_description, "Crash Time Description"),
+        Column("crash_time_merged", TEXT, to_time, "Crash Date Time"),
         Column("beat", TEXT, to_text, "Beat"),
         Column("city_id", INTEGER, to_int, "City Id"),
         # A zero-padded four-character code, not a number: 34,305 of the
@@ -323,6 +371,7 @@ CRASHES = Table(
             to_time_description,
             "NotificationTimeDescription",
         ),
+        Column("notification_time_merged", TEXT, to_time, "NotificationDate"),
         Column("has_digital_media_files", INTEGER, to_bool, "HasDigitalMediaFiles"),
         Column("evidence_number", TEXT, to_text, "EvidenceNumber"),
         Column("is_location_refer_to_narrative", INTEGER, to_bool, "IsLocationReferToNarrative"),
@@ -334,17 +383,13 @@ CRASHES = Table(
 PARTIES = Table(
     name="parties",
     primary_key=("party_id",),
-    # Indexed but not an enforced foreign key: cross-year reports leave real
-    # rows pointing at collision ids that live in another year's file, and
-    # enforcement would reject them.
-    #
     # The index covers party_number too, because (collision_id, party_number)
     # is how injured_witness_passengers names the party a person was with.
     # Lookups by collision_id alone still use it.
     indexes=(("collision_id", "party_number"),),
     columns=(
         Column("party_id", INTEGER, to_int, "PartyId"),
-        Column("collision_id", INTEGER, to_int, "CollisionId"),
+        Column("collision_id", INTEGER, to_int, "CollisionId", references="crashes(collision_id)"),
         Column("party_number", INTEGER, to_int, "PartyNumber"),
         Column("party_type", TEXT, to_text, "PartyType"),
         Column("is_at_fault", INTEGER, to_bool, "IsAtFault"),
@@ -404,12 +449,16 @@ PARTIES = Table(
 VEHICLES = Table(
     name="vehicles",
     # The one table invented here rather than inherited, so it has to declare
-    # its own identity: a party has at most one vehicle per number.
+    # its own identity: a party has at most one vehicle per vehicle_number.
     primary_key=("party_id", "vehicle_number"),
     indexes=(("collision_id",),),
     columns=(
-        Column("party_id", INTEGER, to_int),
-        Column("collision_id", INTEGER, to_int),
+        Column("party_id", INTEGER, to_int, references="parties(party_id)"),
+        Column("collision_id", INTEGER, to_int, references="crashes(collision_id)"),
+        # The 1-based position of the source column group this row came from,
+        # not an ordinal over the party's vehicles. An empty first group is
+        # skipped, so a party carrying only `Vehicle2*` columns produces a
+        # single row numbered 2 and no row numbered 1. Numbers are not dense.
         Column("vehicle_number", INTEGER, to_int),
         Column("type_id", INTEGER, to_int),
         Column("type_description", TEXT, to_text),
@@ -451,13 +500,15 @@ VEHICLE_GROUP_HEADERS: tuple[Mapping[str, str], ...] = (
 
 INJURED_WITNESS_PASSENGERS = Table(
     name="injured_witness_passengers",
-    primary_key=("injured_wit_pass_id",),
+    primary_key=("injured_witness_passenger_id",),
     # Covers party_number for the same reason parties does: it is the other
     # half of the documented link between a person and their party.
     indexes=(("collision_id", "party_number"),),
     columns=(
-        Column("injured_wit_pass_id", INTEGER, to_int, "InjuredWitPassId"),
-        Column("collision_id", INTEGER, to_int, "CollisionId"),
+        # The source abbreviates this `InjuredWitPassId`; the database spells
+        # it out, the way `Gender` becomes gender_code.
+        Column("injured_witness_passenger_id", INTEGER, to_int, "InjuredWitPassId"),
+        Column("collision_id", INTEGER, to_int, "CollisionId", references="crashes(collision_id)"),
         # NULL for witnesses, who are attached to the crash but to no party.
         Column("party_number", INTEGER, to_int, "PartyNumber"),
         Column("stated_age", INTEGER, to_int, "StatedAge"),
@@ -489,29 +540,41 @@ INJURED_WITNESS_PASSENGERS = Table(
 FILE_LOAD_RECORD = "file_load"
 ORPHAN_COUNT_RECORD = "orphan_count"
 
+METADATA_RECORD_TYPES = (FILE_LOAD_RECORD, ORPHAN_COUNT_RECORD)
+
+# Built from the constants above so the two cannot drift apart. Without it the
+# closed set exists only in Python, and `.schema` tells a consumer nothing
+# about what the column can hold.
+_RECORD_TYPE_VALUES = ", ".join(f"'{record_type}'" for record_type in METADATA_RECORD_TYPES)
+
 # Provenance: a log of what was done to build this database. Cheap, and it
 # answers "what is actually in here" long after the shell history is gone.
+#
+# This is the one table that carries constraints. It holds a handful of rows
+# per load rather than tens of millions, so stating the invariants in the file
+# costs nothing measurable and documents itself to anyone running `.schema`.
 METADATA = Table(
     name="metadata",
     # No index: this table holds a handful of rows per load, and one more
     # B-tree to maintain would cost more than it ever saves.
+    check_constraints=(f"record_type IN ({_RECORD_TYPE_VALUES})",),
     columns=(
         # FILE_LOAD_RECORD or ORPHAN_COUNT_RECORD. A file load fills
         # source_file, year_label and the row counts; an orphan count fills
         # orphan_rows. Neither fills the other's columns.
-        Column("record_type", TEXT, to_text),
-        Column("table_name", TEXT, to_text),
+        Column("record_type", TEXT, to_text, not_null=True),
+        Column("table_name", TEXT, to_text, not_null=True),
         Column("source_file", TEXT, to_text),
         Column("year_label", TEXT, to_text),
         Column("rows_read", INTEGER, to_int),
         Column("rows_loaded", INTEGER, to_int),
         Column("rows_skipped", INTEGER, to_int),
         Column("orphan_rows", INTEGER, to_int),
-        Column("converter_version", TEXT, to_text),
+        Column("converter_version", TEXT, to_text, not_null=True),
         # UTC, unlike every other timestamp in this database: crash_date and
         # the report dates are California local time as the source gives them.
         # The name is the only thing that can carry that distinction.
-        Column("loaded_at_utc", TEXT, to_text),
+        Column("loaded_at_utc", TEXT, to_text, not_null=True),
     ),
 )
 

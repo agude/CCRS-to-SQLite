@@ -9,13 +9,24 @@ exports from <https://data.ca.gov/dataset/ccrs> into a SQLite database.
 
 It is the successor to `switrs-to-sqlite` (SWITRS access was disabled in
 2025) and is **not** backwards compatible with the SWITRS database format.
-The full design — source-data quirks, schema, parsing rules, CLI, and
-milestones — lives in `plan.md`. Read it before changing anything about the
-schema or the converters.
+
+The design rationale lives in the code that implements it: read the module
+docstring of `schema.py` before changing the schema and of `converters.py`
+before changing a converter. `README.md` carries the source-data quirks and
+the measured counts behind them. There is no separate design document —
+earlier revisions referred to a `plan.md` that was never tracked in git.
 
 Status: milestone v0.1.0 is complete except for directory mode. Named source
-files convert into the full schema. Milestone v0.2.0 in `plan.md` — directory
-discovery, the full make map, and the golden test — is the next target.
+files convert into the full schema. Directory discovery, the full make map,
+and the golden test are the next target.
+
+## Schema changes
+
+The schema freezes at v1.0 and is the deliverable. `tests/data/schema.sql` is
+a snapshot of the exact DDL; a rename or a retype fails
+`test_the_schema_matches_the_checked_in_snapshot` and nothing else. When the
+change is deliberate, run `just schema-snapshot`, review the diff, and bump
+`SCHEMA_VERSION` in `schema.py` in the same commit.
 
 ## Archetype
 
@@ -50,5 +61,5 @@ samples for the golden test belong in `tests/data/` and are tracked.
 - **`requires-python = ">=3.11"`.** The standard floor is the oldest non-EOL
   CPython, which is 3.10 until October 2026. 3.10 goes EOL before this
   package reaches v1.0, so supporting it would mean claiming a version the
-  matrix drops within months. `plan.md` §2 sets 3.11.
+  matrix drops within months.
 *(None besides the Python floor above.)*

@@ -1,3 +1,6 @@
+import sqlite3
+from contextlib import closing
+
 import pytest
 
 from ccrs_to_sqlite.converters import (
@@ -23,7 +26,7 @@ ALL_CONVERTERS = [
     to_time_description,
 ]
 
-# The source pads values with spaces at random (plan.md quirk 11), so a cell
+# The source pads values with spaces at random, so a cell
 # that is nothing but whitespace has to read as NULL, not as a value.
 EMPTY_CELLS = ["", " ", "  ", "\t", " \t "]
 
@@ -58,6 +61,40 @@ def test_to_int_rejects_non_integers(cell):
 
 
 @pytest.mark.parametrize(
+    "cell",
+    [
+        # int() reads underscore grouping, so this would silently become ten.
+        "1_0",
+        # int() reads any Unicode decimal digit, so these would become 3 and 1234.
+        "٣",
+        "١٢٣٤",
+        "0x10",
+    ],
+)
+def test_to_int_accepts_only_plain_ascii_digits(cell):
+    """A tool whose selling point is strict typing must not guess at a number."""
+    with pytest.raises(ValueError, match="expected an integer"):
+        to_int(cell)
+
+
+@pytest.mark.parametrize("cell", [str(2**63), str(-(2**63) - 1), str(2**64), "9" * 40])
+def test_to_int_rejects_what_sqlite_cannot_store(cell):
+    """Past 64 bits executemany raises OverflowError, which is not a ValueError.
+
+    That escapes the loader's skip-and-warn path and the CLI's error handling
+    both, and it surfaces at flush() --- long after the offending line number
+    is gone. Rejecting it here routes it into the ordinary skipped-row path.
+    """
+    with pytest.raises(ValueError, match="expected a 64-bit integer"):
+        to_int(cell)
+
+
+@pytest.mark.parametrize("cell", [str(2**63 - 1), str(-(2**63))])
+def test_to_int_keeps_the_edges_of_the_range(cell):
+    assert to_int(cell) == int(cell)
+
+
+@pytest.mark.parametrize(
     ("cell", "expected"),
     [("-117.050468", -117.050468), (" 32.742237", 32.742237), ("120", 120.0), ("0.000", 0.0)],
 )
@@ -69,6 +106,28 @@ def test_to_real_parses_numbers(cell, expected):
 def test_to_real_rejects_non_numbers(cell):
     with pytest.raises(ValueError, match="expected a number"):
         to_real(cell)
+
+
+@pytest.mark.parametrize("cell", ["nan", "NaN", " -nan ", "inf", "-inf", "Infinity", "1e400"])
+def test_to_real_rejects_non_finite_numbers(cell):
+    """SQLite writes a NaN as NULL, which is the one thing a coordinate must not become.
+
+    A NaN latitude stored that way is indistinguishable from the 22% of
+    crashes that genuinely have no coordinates, which is the headline caveat
+    of the whole dataset. `1e400` is here because float() overflows it to
+    infinity without ever raising.
+    """
+    with pytest.raises(ValueError, match="expected a finite number"):
+        to_real(cell)
+
+
+def test_a_nan_would_have_been_stored_as_null(tmp_path):
+    """Why the check above exists, rather than trusting the REAL column to hold what it is given."""
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.execute("CREATE TABLE t (latitude REAL) STRICT")
+        connection.execute("INSERT INTO t VALUES (?)", (float("nan"),))
+
+        assert connection.execute("SELECT typeof(latitude) FROM t").fetchone() == ("null",)
 
 
 @pytest.mark.parametrize(
@@ -187,8 +246,27 @@ def test_to_time_description_pads_to_four_digits(cell, expected):
     [("7:50", "0750"), ("07:50", "0750"), ("15:20", "1520"), (" 8:28 ", "0828")],
 )
 def test_to_time_description_drops_the_colon_from_punctuated_times(cell, expected):
-    """448 notification times in the 2025 file are punctuated; the column holds one shape."""
+    """448 notification times in the 2025 file are punctuated."""
     assert to_time_description(cell) == expected
+
+
+@pytest.mark.parametrize(
+    ("cell", "expected"),
+    [("10:5", "1005"), ("1:5", "0105"), ("0:0", "0000"), ("9:9", "0909"), ("23:5", "2305")],
+)
+def test_to_time_description_pads_each_half_of_a_punctuated_time_separately(cell, expected):
+    """Padding the whole string after dropping the colon reads 10:5 as 0105.
+
+    That is the worst possible failure for this column: four digits wide, a
+    valid clock reading, accepted by the resolver, and nine hours from the
+    truth with nothing left in the row to reveal it.
+    """
+    assert to_time_description(cell) == expected
+
+
+def test_a_punctuated_time_survives_into_the_resolved_column():
+    assert to_time_of_day("", "10:5") == "10:05:00"
+    assert to_time_of_day("", "1:5") == "01:05:00"
 
 
 def test_to_time_description_keeps_impossible_times_as_they_came():
@@ -196,5 +274,13 @@ def test_to_time_description_keeps_impossible_times_as_they_came():
     assert to_time_description("2500") == "2500"
 
 
-def test_to_time_description_passes_non_numeric_text_through():
-    assert to_time_description(" UNK ") == "UNK"
+@pytest.mark.parametrize("cell", [" UNK ", "7:50:00", "12:34 PM", "٣"])
+def test_to_time_description_passes_anything_else_through(cell):
+    """Not a width guarantee: what it cannot read as a clock reading it keeps verbatim."""
+    assert to_time_description(cell) == cell.strip()
+
+
+@pytest.mark.parametrize("cell", ["7:50:00", "١٢٣٤", "UNK"])
+def test_the_resolver_takes_only_four_ascii_digits(cell):
+    """Anything the raw column passed through unchanged must not become a time."""
+    assert to_time_of_day("", cell) is None

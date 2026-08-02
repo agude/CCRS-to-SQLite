@@ -45,6 +45,45 @@ adheres to [Semantic Versioning][semver].
   names which of the two kinds each log row is.
 - Every source file is checked for existence and readability before any
   loading starts.
+- Foreign keys are declared on all four parent/child links. They stay
+  unenforced — cross-year reports would fail enforcement — but tools can now
+  read the relationships out of the file rather than out of this repo.
+- `crash_time_merged` and `notification_time_merged` keep the merged
+  DateTime column's time half, so both inputs to a resolved time survive
+  beside it. Previously only the description did, and the value the resolver
+  rejected was discarded.
+- `metadata` declares its invariants: `record_type`, `table_name`,
+  `converter_version` and `loaded_at_utc` are `NOT NULL`, and `record_type`
+  carries a `CHECK` naming its two values.
+- A parties file now logs a `file_load` row for `vehicles` as well as for
+  `parties`, so the provenance log names every table it filled and the count
+  of parties kept without their vehicles is persisted rather than only
+  printed.
+- `tests/data/schema.sql` pins the exact DDL, regenerated with
+  `just schema-snapshot`. A rename or a retype now fails a test.
+
+### Fixed
+
+- Punctuated times pad each half separately. `10:5` became `0105` — a
+  well-formed clock reading nine hours from the truth, accepted by the
+  resolver and indistinguishable downstream from a real value.
+- `to_int` rejects integers outside SQLite's 64-bit range. They parsed
+  cleanly and then raised `OverflowError` from `executemany`, which is not a
+  `ValueError` and so escaped both the skipped-row path and the CLI's error
+  handling, aborting the load with a bare traceback and no line number.
+- `to_int` accepts only plain ASCII digits. `int()` reads underscore
+  grouping and Unicode digits, so `1_0` silently became ten.
+- `to_real` rejects non-finite values. SQLite stores a NaN as NULL, which
+  made a NaN latitude indistinguishable from the 22% of crashes that have no
+  coordinates; `inf` and `1e400` were stored as REAL infinities.
+- A primary key repeated inside a single file is caught by the guard, with
+  the explanation that already existed for the across-files case, instead of
+  surfacing as a bare `UNIQUE constraint failed`.
+
+### Changed
+
+- `injured_wit_pass_id` is now `injured_witness_passenger_id`, matching the
+  table it lives in and the treatment every other inherited name got.
 
 ### Not yet implemented
 

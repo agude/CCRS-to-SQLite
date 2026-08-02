@@ -1,11 +1,22 @@
 import csv
 import sqlite3
+from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
 import pytest
 
-from ccrs_to_sqlite.converters import to_int, to_text
+from ccrs_to_sqlite.converters import (
+    to_bool,
+    to_date,
+    to_datetime,
+    to_int,
+    to_real,
+    to_text,
+    to_time,
+    to_time_description,
+    to_time_of_day,
+)
 from ccrs_to_sqlite.open_record import open_source_file
 from ccrs_to_sqlite.schema import (
     ALL_TABLES,
@@ -13,11 +24,16 @@ from ccrs_to_sqlite.schema import (
     CRASHES_SOURCE_HEADERS,
     INJURED_SOURCE_HEADERS,
     INJURED_WITNESS_PASSENGERS,
+    METADATA,
+    METADATA_RECORD_TYPES,
     PARTIES,
     PARTIES_SOURCE_HEADERS,
+    SCHEMA_VERSION,
     VEHICLE_GROUP_HEADERS,
     VEHICLES,
     Column,
+    PairedColumn,
+    SQLiteValue,
     Table,
     check_expected_headers,
     column_positions,
@@ -89,37 +105,50 @@ def test_only_the_paired_time_sources_feed_more_than_one_column():
     }
 
 
-@pytest.mark.parametrize(
-    ("date_column", "time_column", "description_column", "merged", "described"),
-    [
-        (
-            "crash_date",
-            "crash_time",
-            "crash_time_description",
-            "Crash Date Time",
-            "Crash Time Description",
-        ),
-        (
-            "notification_date",
-            "notification_time",
-            "notification_time_description",
-            "NotificationDate",
-            "NotificationTimeDescription",
-        ),
-    ],
-)
-def test_a_merged_datetime_becomes_a_date_a_resolved_time_and_the_raw_description(
-    date_column, time_column, description_column, merged, described
+TIME_PAIRINGS = [
+    ("crash", "Crash Date Time", "Crash Time Description"),
+    ("notification", "NotificationDate", "NotificationTimeDescription"),
+]
+
+
+@pytest.mark.parametrize(("prefix", "merged", "described"), TIME_PAIRINGS)
+def test_a_merged_datetime_becomes_a_date_a_resolved_time_and_both_raw_inputs(
+    prefix, merged, described
 ):
     """The date comes from the merged column; the time needs both sources to settle."""
     merged_header, described_header = normalize_header(merged), normalize_header(described)
 
-    assert CRASHES.column(date_column).normalized_source_headers == (merged_header,)
-    assert CRASHES.column(time_column).normalized_source_headers == (
+    assert CRASHES.column(f"{prefix}_date").normalized_source_headers == (merged_header,)
+    assert CRASHES.column(f"{prefix}_time").normalized_source_headers == (
         merged_header,
         described_header,
     )
-    assert CRASHES.column(description_column).normalized_source_headers == (described_header,)
+    assert CRASHES.column(f"{prefix}_time_description").normalized_source_headers == (
+        described_header,
+    )
+    assert CRASHES.column(f"{prefix}_time_merged").normalized_source_headers == (merged_header,)
+
+
+@pytest.mark.parametrize(("prefix", "merged", "described"), TIME_PAIRINGS)
+def test_both_inputs_to_a_resolved_time_survive_into_the_database(prefix, merged, described):
+    """`make_raw` parity: a resolved value is only auditable if what it rejected is kept.
+
+    The date column takes only the date half of the merged column, so without
+    a raw column of its own the merged time is discarded — and on the rows
+    where the two sources disagree, nothing in the row would show it.
+    """
+    header_positions = index_header_row(read_real_header_row("crashes"), "crashes")
+    positions = column_positions(CRASHES, header_positions)
+    row = [""] * len(header_positions)
+    row[header_positions[normalize_header(merged)]] = "1/14/2025 7:50:00 AM"
+    row[header_positions[normalize_header(described)]] = "1520"
+
+    values = dict(zip(CRASHES.column_names, convert_row(CRASHES, row, positions), strict=True))
+
+    assert values[f"{prefix}_date"] == "2025-01-14"
+    assert values[f"{prefix}_time"] == "15:20:00"
+    assert values[f"{prefix}_time_description"] == "1520"
+    assert values[f"{prefix}_time_merged"] == "07:50:00"
 
 
 def test_computed_tables_read_no_headers_directly():
@@ -203,9 +232,176 @@ def test_no_index_repeats_a_primary_key():
 
 
 def test_the_documented_person_to_party_link_is_indexed():
-    """plan.md names collision_id + party_number as the link; both sides carry it."""
+    """collision_id + party_number is the link from a person to a party; both sides carry it."""
     assert ("collision_id", "party_number") in PARTIES.indexes
     assert ("collision_id", "party_number") in INJURED_WITNESS_PASSENGERS.indexes
+
+
+# Every parent/child pair the schema declares. Enforcement stays off, so these
+# exist to be read out of the file by tools rather than to reject anything.
+DECLARED_FOREIGN_KEYS = [
+    ("parties", "collision_id", "crashes", "collision_id"),
+    ("vehicles", "party_id", "parties", "party_id"),
+    ("vehicles", "collision_id", "crashes", "collision_id"),
+    ("injured_witness_passengers", "collision_id", "crashes", "collision_id"),
+]
+
+
+def test_the_relationships_are_declared_in_the_file_not_only_in_the_readme():
+    """Datasette, SQLite browsers and ORMs all draw the graph from foreign_key_list."""
+    declared = []
+    with closing(sqlite3.connect(":memory:")) as connection:
+        for table in ALL_TABLES:
+            connection.execute(table.create_table_sql())
+
+        for table in ALL_TABLES:
+            for row in connection.execute(
+                "SELECT * FROM pragma_foreign_key_list(?)", (table.name,)
+            ):
+                _, _, parent_table, child_column, parent_column = row[:5]
+                declared.append((table.name, child_column, parent_table, parent_column))
+
+    assert sorted(declared) == sorted(DECLARED_FOREIGN_KEYS)
+
+
+def test_every_declared_foreign_key_points_at_a_primary_key():
+    """SQLite needs a unique parent, and an unenforced key that names a non-key is a lie."""
+    by_name = {table.name: table for table in ALL_TABLES}
+    for _, _, parent_table, parent_column in DECLARED_FOREIGN_KEYS:
+        assert by_name[parent_table].primary_key == (parent_column,)
+
+
+def test_foreign_keys_are_declared_but_left_unenforced():
+    """A cross-year report puts a party in one file and its crash in another.
+
+    Enforcement would reject those real rows, so the default off state of
+    PRAGMA foreign_keys is load-bearing rather than an oversight.
+    """
+    with closing(sqlite3.connect(":memory:")) as connection:
+        for table in ALL_TABLES:
+            connection.execute(table.create_table_sql())
+
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 0
+
+        orphan: list[SQLiteValue] = [None] * len(PARTIES.columns)
+        orphan[PARTIES.column_names.index("party_id")] = 1
+        orphan[PARTIES.column_names.index("collision_id")] = 999
+        connection.execute(PARTIES.insert_sql(), orphan)
+
+        assert connection.execute("SELECT COUNT(*) FROM parties").fetchone()[0] == 1
+
+
+AnyConverter = Callable[..., SQLiteValue]
+
+CONVERTERS_BY_SQL_TYPE: dict[str, set[AnyConverter]] = {
+    "TEXT": {to_text, to_date, to_datetime, to_time, to_time_description, to_time_of_day},
+    "INTEGER": {to_int, to_bool},
+    "REAL": {to_real},
+}
+
+
+def converter_of(column: Column | PairedColumn) -> AnyConverter:
+    return column.convert if isinstance(column, Column) else column.resolve
+
+
+@pytest.mark.parametrize("table", ALL_TABLES, ids=lambda table: table.name)
+def test_every_column_is_typed_the_way_its_converter_returns(table):
+    """`Column("latitude", INTEGER, to_real)` passes mypy and fails at insert time.
+
+    The Converter alias erases which of the three types a converter produces,
+    so nothing in the type system ties the two halves of a column together.
+    On a STRICT table the mismatch surfaces mid-load, thousands of rows in.
+    """
+    for column in table.columns:
+        converter = converter_of(column)
+
+        assert converter in CONVERTERS_BY_SQL_TYPE[column.sql_type], (
+            f"{table.name}.{column.name} is {column.sql_type} but is filled by {converter.__name__}"
+        )
+
+
+def test_every_converter_is_accounted_for():
+    """Otherwise a new converter is simply absent from the check above."""
+    checked = {converter for group in CONVERTERS_BY_SQL_TYPE.values() for converter in group}
+    used = {converter_of(column) for table in ALL_TABLES for column in table.columns}
+
+    assert used <= checked
+
+
+# The exact DDL this package promises to produce, regenerated with
+# `just schema-snapshot` when a schema change is deliberate.
+SCHEMA_SNAPSHOT = Path(__file__).parent / "data" / "schema.sql"
+
+
+def rendered_schema():
+    """The whole schema as one text, in the order create_schema writes it."""
+    statements = [f"PRAGMA user_version = {SCHEMA_VERSION};"]
+    for table in ALL_TABLES:
+        statements.append(f"{table.create_table_sql()};")
+    for table in ALL_TABLES:
+        statements.extend(f"{statement};" for statement in table.create_index_sql())
+
+    return "\n\n".join(statements) + "\n"
+
+
+def test_the_schema_matches_the_checked_in_snapshot():
+    """The schema is the deliverable, and from v1.0 it is frozen.
+
+    Line coverage cannot see a rename or a retype --- every test still passes
+    with `latitude` spelled `lattitude`. This is the one test that fails, so
+    that changing the shape of the database is always a deliberate act with a
+    reviewable diff rather than something that ships by accident.
+    """
+    assert rendered_schema() == SCHEMA_SNAPSHOT.read_text(encoding="utf-8")
+
+
+def test_metadata_requires_the_fields_this_tool_always_writes():
+    """These four are written on every path, so a NULL in one means a bug upstream."""
+    always_written = ["record_type", "table_name", "converter_version", "loaded_at_utc"]
+    values = dict.fromkeys(METADATA.column_names)
+    values["record_type"] = "file_load"
+    values["table_name"] = "crashes"
+    values["converter_version"] = "0.1.0"
+    values["loaded_at_utc"] = "2026-01-01 00:00:00"
+
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.execute(METADATA.create_table_sql())
+        connection.execute(METADATA.insert_sql(), list(values.values()))
+
+        for name in always_written:
+            missing = {**values, name: None}
+            with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+                connection.execute(METADATA.insert_sql(), list(missing.values()))
+
+
+def test_metadata_states_its_closed_set_of_record_types_in_the_schema():
+    """Otherwise the two kinds exist only as Python constants a consumer never sees."""
+    values = dict.fromkeys(METADATA.column_names)
+    values["table_name"] = "crashes"
+    values["converter_version"] = "0.1.0"
+    values["loaded_at_utc"] = "2026-01-01 00:00:00"
+
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.execute(METADATA.create_table_sql())
+        for record_type in METADATA_RECORD_TYPES:
+            connection.execute(
+                METADATA.insert_sql(), list({**values, "record_type": record_type}.values())
+            )
+
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            connection.execute(
+                METADATA.insert_sql(), list({**values, "record_type": "invented"}.values())
+            )
+
+
+def test_the_fact_tables_carry_no_check_constraints():
+    """Forty boolean columns times twenty million rows is not where to spend on a CHECK.
+
+    The converters already guarantee 0/1/NULL, and the cost would be paid on
+    every insert forever.
+    """
+    for table in [CRASHES, PARTIES, VEHICLES, INJURED_WITNESS_PASSENGERS]:
+        assert table.check_constraints == (), table.name
 
 
 def test_index_header_row_rejects_a_repeated_header():
@@ -262,7 +458,7 @@ def test_convert_row_types_the_values():
         )
     )
 
-    assert values["injured_wit_pass_id"] == 5318055
+    assert values["injured_witness_passenger_id"] == 5318055
     assert values["is_witness_only"] == 1
     assert values["gender_description"] == "FEMALE"
     assert values["party_number"] is None

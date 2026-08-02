@@ -18,7 +18,8 @@ CCRS and is **not** compatible with the SWITRS database format.
 ## Status
 
 Early development. Conversion works for named source files; directory mode is
-not implemented yet. See `plan.md` for the design and milestones.
+not implemented yet. The schema is documented below and is not frozen until
+v1.0; see `CHANGELOG.md` for what has landed.
 
 ## Installation
 
@@ -102,11 +103,41 @@ Notable conversions:
   them.
 - The two inline vehicle groups on a party row become rows in `vehicles`.
   `make_raw` is the source string; `make` is the normalized maker name, and
-  is `NULL` when the make map does not cover the string.
+  is `NULL` when the make map does not cover the string. The map covers 96.7%
+  of vehicle rows across all published years, over 86 makers. It has to carry
+  two conventions: the later years use NCIC codes (`TOYT`), the earlier ones a
+  plain truncation (`TOYO`), and `TOYO` alone is 498,501 rows.
+- `vehicle_number` is which source column group the row came from, not an
+  ordinal over the party's vehicles. An empty first group is skipped, so a
+  party carrying only `Vehicle2*` columns would get one row numbered 2 and no
+  row numbered 1. Density is therefore not guaranteed — though across all
+  published years, no such party exists: every one of the 9.2M vehicle rows
+  is dense.
 
-Foreign keys are indexed but not enforced. Reports straddling a year boundary
-genuinely put a party in one file and its crash in another, so enforcement
-would reject valid rows; the orphans are counted and reported instead.
+Foreign keys are declared and indexed, but deliberately not enforced —
+`PRAGMA foreign_keys` is off, which is SQLite's default. Reports straddling a
+year boundary genuinely put a party in one file and its crash in another, so
+enforcement would reject valid rows; the orphans are counted and reported
+instead. The declarations are there so tools can read the relationships out of
+the file:
+
+| Child | Parent |
+|---|---|
+| `parties.collision_id` | `crashes.collision_id` |
+| `vehicles.party_id` | `parties.party_id` |
+| `vehicles.collision_id` | `crashes.collision_id` |
+| `injured_witness_passengers.collision_id` | `crashes.collision_id` |
+
+A person is linked to their party by `(collision_id, party_number)`, which
+both tables index. **That pair is not unique**, so the join can fan out:
+measured across all eleven published years, 42 pairs are claimed by two
+`parties` rows each (85 rows in ~9M). It is a fifth foreign key that cannot be
+declared for the same reason — SQLite requires a unique parent.
+
+In practice the join is reliable enough to use and too lossy to trust blindly:
+every `parties` row has a `party_number`, so it never silently drops a person,
+but an aggregate over it will occasionally double-count one. `party_id` is the
+only truly unique handle on a party.
 
 ### How times of day are resolved
 
@@ -126,26 +157,48 @@ So `crash_time` is resolved from both:
    midnight;
 3. otherwise `NULL`.
 
-Measured on the 2025 file, out of 400,215 crashes:
+Measured across all published years, out of 4,591,340 crashes:
 
 | Case | Rows | Resolved to |
 |---|---|---|
-| both sources agree | 391,155 | that time |
-| merged column is a midnight placeholder, description has the time | 3,189 | the description |
-| both hold real times that differ | 1,603 | the description |
-| genuine midnight, stated as `0000` | 439 | `00:00:00` |
-| description says `2500`, merged column has a real time | 77 | the merged column |
-| neither recorded a time | 3,747 | `NULL` |
+| both sources agree | 4,537,311 | that time |
+| merged column is a midnight placeholder, description has the time | 4,644 | the description |
+| both hold real times that differ | 1,787 | the description |
+| description unusable (`2500` and friends), merged column has a real time | 487 | the merged column |
+| neither recorded a time | 47,111 | `NULL` |
 
-Reading the merged column alone would have asserted midnight for 3,731 crashes
-that never recorded one, making `00:00:00` the most common time in the
-database by a factor of three. Reading only the description would have thrown
-away the 77 rows it has no answer for.
+Reading the merged column alone would have asserted midnight for the 4,644
+crashes in the second row plus every one of the 47,111 that recorded no time
+at all, making `00:00:00` the most common time in the database by a wide
+margin. Reading only the description would have thrown away the 487 rows it
+has no answer for.
 
-`crash_time_description` is kept raw beside `crash_time`, so every value the
+Both failure modes are concentrated in recent years: 2025 alone accounts for
+3,190 of the 4,644 placeholder rows and 1,605 of the 1,787 disagreements. A
+converter built and validated against one year would have been tuned almost
+entirely by that year's quirks.
+
+Both inputs are kept raw beside the resolved column, so every value the
 resolver settled on stays auditable — the same arrangement as `make_raw` and
-`make`. `notification_date` / `notification_time` work identically; those are
-the only two such pairings in the dataset.
+`make`:
+
+| Column | Holds |
+|---|---|
+| `crash_time` | the resolved time, `NULL` when neither source named one |
+| `crash_time_description` | `Crash Time Description` as it came, padded to four digits |
+| `crash_time_merged` | the time half of `Crash Date Time`, including its midnights |
+
+Keeping only the description would half-build the audit trail: `crash_date`
+takes only the date half of the merged column, so the merged *time* would
+survive nowhere. Find the rows where the two disagree with
+`WHERE crash_time <> crash_time_merged`.
+
+That also means **`crash_date || ' ' || crash_time` is not a source value.**
+On the 1,787 rows where the two sources hold different real times, the
+concatenation names a moment neither of them stated.
+
+`notification_date` / `notification_time` / `notification_time_merged` work
+identically; those are the only two such pairings in the dataset.
 
 ### `metadata`
 
@@ -158,23 +211,46 @@ A log with two kinds of row, told apart by `record_type`:
 
 Both fill `table_name`, `converter_version`, and `loaded_at_utc`. That last
 one is UTC; every other timestamp in the database is California local time,
-as the source supplies it.
+as the source supplies it. `record_type`, `table_name`, `converter_version`
+and `loaded_at_utc` are `NOT NULL`, and `record_type` carries a `CHECK` naming
+the two values, so `.schema` describes the table without reference to this
+README.
+
+There is one `file_load` row per table filled, not per file — a parties file
+logs two, one for `parties` and one for `vehicles`. On the `vehicles` row,
+`rows_read` counts the parties rows it was derived from, since vehicles are
+never read directly, and `rows_skipped` counts parties kept whose inline
+vehicle columns would not convert.
 
 ### Caveats worth knowing before you query
 
-Measured on the 2025 file:
+Measured across all 4,591,340 published crashes:
 
-- **22.3% of crashes have no coordinates** (89,158 of 400,215). Any map or
-  spatial aggregate silently covers about three quarters of the data.
-- **884 longitudes are positive**, i.e. sign-flipped into China, and roughly
-  1,600 fall outside California altogether. Both are stored as they came.
-- **`crash_time` is `NULL` on 3,747 rows** (0.94%) because no time was
+- **31.0% of crashes have no coordinates** (1,423,619). Any map or spatial
+  aggregate silently covers about two thirds of the data. This is worse than
+  it looks from a recent year alone — 2025 is 22.3%, so coverage has been
+  improving and the older years drag the total down.
+- **3,281 longitudes are positive**, i.e. sign-flipped into the eastern
+  hemisphere, and 9,276 fall outside a California bounding box altogether.
+  Both are stored as they came.
+- **`crash_time` is `NULL` on 47,111 rows** (1.03%) because no time was
   recorded for them. That is deliberate — see the section below.
-- **`is_deleted` is false on every row.** The published files carry only the
-  current version of each report, so the column is present for fidelity and
-  tells you nothing.
+- **`is_deleted` is false on every row**, confirmed across all 4.6M. The
+  published files carry only the current version of each report, so the
+  column is present for fidelity and tells you nothing.
 - `special_condition` and `road_condition_1` are multi-valued free text, not
   enums.
+- **`crash_time_description` is not guaranteed to be four characters.** Values
+  it can read as a clock reading are normalized to four digits; anything else
+  — free text like `UNK` — would be kept exactly as it came. No published row
+  is anything else: all 4,591,338 non-empty values are four digits, including
+  the `2500` unknown-time marker. Filter on `length(...) = 4` if you want to
+  stay safe against a future file, but it currently removes nothing.
+- Rows whose values do not fit their column are skipped and counted, not
+  silently nulled. `metadata.rows_skipped` says how many, per file and table,
+  and each one printed a warning naming its line. Across all eleven years
+  that is **one row in 19,096,894** — a single party row with two extra
+  fields, from an unquoted comma in free text.
 
 Indexes cover the documented relationships, not every column you might filter
 on. Adding your own is one statement against a local file, and the semver

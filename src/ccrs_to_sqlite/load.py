@@ -40,6 +40,7 @@ from ccrs_to_sqlite.schema import (
     ORPHAN_COUNT_RECORD,
     PARTIES,
     PARTIES_SOURCE_HEADERS,
+    SCHEMA_VERSION,
     VEHICLES,
     SQLiteValue,
     Table,
@@ -66,10 +67,6 @@ MAX_QUERY_PARAMETERS = 900
 # are free text controlled by CHP, so the cap is lifted well past anything a
 # report should contain while still refusing to buffer a runaway file.
 MAX_CSV_FIELD_SIZE = 16 * 1024 * 1024
-
-# Stamped into PRAGMA user_version. Bump it whenever a column is added,
-# removed, renamed, or retyped, so a consumer can tell without introspecting.
-SCHEMA_VERSION = 1
 
 BULK_LOAD_PRAGMAS = (
     # No rollback journal: the database is built in a temporary file that is
@@ -132,6 +129,12 @@ class LoadReport:
     rows_read: int = 0
     rows_loaded: int = 0
     rows_skipped: int = 0
+    # Whether this file also fed the vehicles table. Recorded rather than
+    # inferred from the counts below, so a parties file that happened to
+    # produce no vehicles still says so in the metadata.
+    splits_vehicles: bool = False
+    # Vehicle rows written. One loaded parties row yields zero, one or two.
+    vehicles_loaded: int = 0
     # Rows kept whose inline vehicle columns could not be converted.
     vehicles_skipped: int = 0
 
@@ -149,15 +152,16 @@ class LoadedKeyRange:
 
 
 class PrimaryKeyGuard:
-    """Refuses a primary key that an earlier source file already supplied.
+    """Refuses a primary key the table has already been given.
 
-    Within a single file the ids are already unique --- the dataset publishes
-    only the latest version of each report --- so a collision means two files
-    overlap, which in a year-partitioned dataset means the user mixed
-    snapshots. That is corruption, not a merge, so it stops the load.
+    The dataset publishes only the latest version of each report, so a
+    repeated id means two snapshots were loaded together --- whether they
+    arrived as two files or as one file holding both. That is corruption
+    rather than a merge, so it stops the load.
 
-    Keys are only probed once a previous file has loaded into the table, so
-    the common one-file-per-table case costs nothing.
+    Left to SQLite the same collision surfaces as a bare `UNIQUE constraint
+    failed`, naming neither the file nor what it implies. Catching it here is
+    what buys the explanation in `_describe_duplicate`.
     """
 
     def __init__(self, table: Table) -> None:
@@ -173,6 +177,7 @@ class PrimaryKeyGuard:
         self._loaded_ranges: list[LoadedKeyRange] = []
         self._smallest_seen: int | None = None
         self._largest_seen: int | None = None
+        self._wrote_a_batch = False
 
     def check_batch(
         self,
@@ -180,21 +185,27 @@ class PrimaryKeyGuard:
         rows: Sequence[Sequence[SQLiteValue]],
         source_file: str,
     ) -> None:
-        """Fail if any key in the batch is already in the table. Records the batch either way."""
-        keys = [row[self._key_index] for row in rows]
-        if self._loaded_ranges:
+        """Fail if any key in the batch is already taken. Records the batch either way."""
+        keys = [self._key_of(row) for row in rows]
+        self._fail_on_repeat_within_batch(keys, source_file)
+
+        # Nothing to probe against until some batch has landed, so the common
+        # case --- the first batch of the first file --- costs one set build
+        # and no queries.
+        if self._loaded_ranges or self._wrote_a_batch:
             self._fail_on_existing_key(connection, keys, source_file)
 
         for key in keys:
-            if not isinstance(key, int):
-                continue
             self._smallest_seen = (
                 key if self._smallest_seen is None else min(self._smallest_seen, key)
             )
             self._largest_seen = key if self._largest_seen is None else max(self._largest_seen, key)
 
+        self._wrote_a_batch = True
+
     def finish_file(self, source_file: str) -> None:
         """Close out a file, remembering the key span it contributed."""
+        self._wrote_a_batch = False
         if self._smallest_seen is None or self._largest_seen is None:
             return
 
@@ -204,10 +215,28 @@ class PrimaryKeyGuard:
         self._smallest_seen = None
         self._largest_seen = None
 
+    def _key_of(self, row: Sequence[SQLiteValue]) -> int:
+        key = row[self._key_index]
+        if not isinstance(key, int):
+            # The loader rejects a row whose primary key converted to None, and
+            # the column is INTEGER, so reaching this means the guard is
+            # indexing the wrong column rather than anything the data can do.
+            raise TypeError(f"{self.table.name}.{self.primary_key} is {key!r}, not an integer")
+
+        return key
+
+    def _fail_on_repeat_within_batch(self, keys: Sequence[int], source_file: str) -> None:
+        seen: set[int] = set()
+        for key in keys:
+            if key in seen:
+                raise DuplicatePrimaryKeyError(self._describe_duplicate(key, source_file))
+
+            seen.add(key)
+
     def _fail_on_existing_key(
         self,
         connection: sqlite3.Connection,
-        keys: Sequence[SQLiteValue],
+        keys: Sequence[int],
         source_file: str,
     ) -> None:
         for chunk in _chunked(keys, MAX_QUERY_PARAMETERS):
@@ -224,6 +253,13 @@ class PrimaryKeyGuard:
         earlier = [loaded.source_file for loaded in self._loaded_ranges if loaded.contains(key)]
         if not earlier:
             earlier = [loaded.source_file for loaded in self._loaded_ranges]
+
+        if not earlier:
+            return (
+                f"{self.table.name}.{self.primary_key} {key} appears more than once in "
+                f"{source_file}. The dataset publishes one row per id, so this means the "
+                f"file holds two snapshots of the same data concatenated together."
+            )
 
         return (
             f"{self.table.name}.{self.primary_key} {key} appears in {source_file} "
@@ -275,7 +311,11 @@ def load_source_file(
     otherwise only runs past fifty thousand rows.
     """
     progress = _default_progress(progress)
-    report = LoadReport(source_file=path.name, table_name=kind.table.name)
+    report = LoadReport(
+        source_file=path.name,
+        table_name=kind.table.name,
+        splits_vehicles=kind.splits_vehicles,
+    )
     print(f"{path.name}: reading into {kind.table.name}", file=progress)
 
     with open_source_file(path, parse_error) as source_file, _relaxed_field_size_limit():
@@ -300,6 +340,7 @@ def load_source_file(
 
             batches.add(converted.values, converted.vehicles)
             report.rows_loaded += 1
+            report.vehicles_loaded += len(converted.vehicles)
             if report.rows_read % PROGRESS_INTERVAL == 0:
                 print(f"{path.name}: {report.rows_read:,} rows", file=progress)
 
@@ -337,7 +378,17 @@ def record_file_load(
     report: LoadReport,
     year_label: str | None = None,
 ) -> None:
-    """Log one source file's load in the metadata table."""
+    """Log one source file's load in the metadata table, once per table it filled.
+
+    A parties file fills two tables, so it logs two rows. Without the second
+    one the provenance log never mentions `vehicles` at all, and the count of
+    parties kept without their vehicles --- printed to stderr and otherwise
+    thrown away --- survives nowhere in the database it describes.
+
+    On that second row `rows_read` counts parties rows rather than vehicle
+    rows, because vehicles are never read: they are derived from the parties
+    rows that converted, one of which can yield two vehicles or none.
+    """
     _record_metadata(
         connection,
         record_type=FILE_LOAD_RECORD,
@@ -347,6 +398,19 @@ def record_file_load(
         rows_read=report.rows_read,
         rows_loaded=report.rows_loaded,
         rows_skipped=report.rows_skipped,
+    )
+    if not report.splits_vehicles:
+        return
+
+    _record_metadata(
+        connection,
+        record_type=FILE_LOAD_RECORD,
+        source_file=report.source_file,
+        table_name=VEHICLES.name,
+        year_label=year_label,
+        rows_read=report.rows_loaded,
+        rows_loaded=report.vehicles_loaded,
+        rows_skipped=report.vehicles_skipped,
     )
 
 

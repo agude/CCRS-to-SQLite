@@ -107,7 +107,8 @@ def test_convert_indexes_the_finished_database(tmp_path, sources, progress):
     assert len(indexes) == 4
 
 
-def test_convert_logs_provenance_for_every_file(tmp_path, sources, progress):
+def test_convert_logs_provenance_for_every_table_not_every_file(tmp_path, sources, progress):
+    """The parties file fills two tables, so it logs two rows. Otherwise nothing names vehicles."""
     database = tmp_path / "ccrs.sqlite3"
 
     convert(sources, database, progress=progress)
@@ -115,13 +116,25 @@ def test_convert_logs_provenance_for_every_file(tmp_path, sources, progress):
     logged = rows(
         database,
         "SELECT source_file, table_name, year_label, rows_loaded FROM metadata"
-        f" WHERE record_type = '{FILE_LOAD_RECORD}' ORDER BY source_file",
+        f" WHERE record_type = '{FILE_LOAD_RECORD}' ORDER BY source_file, table_name",
     )
     assert logged == [
         ("crashes_2025.csv", "crashes", "2025", 2),
         ("injuredwitnesspassengers_2025.csv", "injured_witness_passengers", "2025", 2),
         ("parties_2025.csv", "parties", "2025", 3),
+        ("parties_2025.csv", "vehicles", "2025", 3),
     ]
+
+    every_table = rows(
+        database,
+        f"SELECT DISTINCT table_name FROM metadata WHERE record_type = '{FILE_LOAD_RECORD}'",
+    )
+    assert {table_name for (table_name,) in every_table} == {
+        "crashes",
+        "parties",
+        "vehicles",
+        "injured_witness_passengers",
+    }
 
 
 def test_convert_counts_and_reports_orphans(tmp_path, sources, progress):

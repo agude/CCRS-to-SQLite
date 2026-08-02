@@ -14,7 +14,6 @@ from ccrs_to_sqlite.load import (
     MAX_QUERY_PARAMETERS,
     ORPHAN_CHECKED_TABLES,
     PARTIES_SOURCE,
-    SCHEMA_VERSION,
     DuplicatePrimaryKeyError,
     PrimaryKeyGuard,
     apply_bulk_load_pragmas,
@@ -32,6 +31,7 @@ from ccrs_to_sqlite.schema import (
     INJURED_WITNESS_PASSENGERS,
     ORPHAN_COUNT_RECORD,
     PARTIES,
+    SCHEMA_VERSION,
     VEHICLES,
 )
 
@@ -121,7 +121,11 @@ def test_a_parties_file_fills_both_parties_and_vehicles(tmp_path, connection, pr
         tmp_path,
         "parties",
         [
-            a_party(1, 4541904, vehicle1make="TOYT", vehicle2make="GDAN"),
+            # HOMEMADE rather than a real-looking NCIC code, because this
+            # asserts an unmapped make reaches the database as NULL. Any
+            # plausible code is a maker the map may legitimately learn later,
+            # and this test would then fail for no reason worth investigating.
+            a_party(1, 4541904, vehicle1make="TOYT", vehicle2make="HOMEMADE"),
             a_party(2, 4541904, vehicle1make="FORD"),
             a_party(3, 4541904),
         ],
@@ -133,7 +137,7 @@ def test_a_parties_file_fills_both_parties_and_vehicles(tmp_path, connection, pr
     assert stored(connection, PARTIES, "party_id") == [(1,), (2,), (3,)]
     assert stored(connection, VEHICLES, "party_id", "vehicle_number", "make_raw", "make") == [
         (1, 1, "TOYT", "TOYOTA"),
-        (1, 2, "GDAN", None),
+        (1, 2, "HOMEMADE", None),
         (2, 1, "FORD", "FORD"),
     ]
 
@@ -189,7 +193,7 @@ def test_an_injured_file_loads(tmp_path, connection, progress):
     load(connection, path, INJURED_SOURCE, progress)
 
     assert stored(
-        connection, INJURED_WITNESS_PASSENGERS, "injured_wit_pass_id", "is_witness_only"
+        connection, INJURED_WITNESS_PASSENGERS, "injured_witness_passenger_id", "is_witness_only"
     ) == [(5318055, 1)]
 
 
@@ -428,6 +432,30 @@ def test_the_duplicate_message_points_at_the_file_that_supplied_the_key_first(
     assert "crashes.collision_id 30" in str(failure.value)
     assert "crashes_2025.csv and in crashes_2025.csv" in str(failure.value)
     assert "two snapshots" in str(failure.value)
+
+
+def test_a_key_repeated_inside_one_file_is_fatal_with_the_same_explanation(
+    tmp_path, connection, progress
+):
+    """Left to SQLite this is a bare `UNIQUE constraint failed` naming no file."""
+    path = write_source_file(tmp_path, "crashes", [a_crash(4550266), a_crash(4550266)])
+    guard = PrimaryKeyGuard(CRASHES)
+
+    with pytest.raises(DuplicatePrimaryKeyError) as failure:
+        load(connection, path, CRASHES_SOURCE, progress, guard=guard)
+
+    assert "crashes.collision_id 4550266" in str(failure.value)
+    assert "more than once in crashes_2025.csv" in str(failure.value)
+    assert "two snapshots" in str(failure.value)
+
+
+def test_a_key_repeated_across_two_batches_of_one_file_is_fatal(tmp_path, connection, progress):
+    """The repeat is caught by probing the table, since the earlier batch has landed."""
+    path = write_source_file(tmp_path, "crashes", [a_crash(key) for key in [1, 2, 3, 4, 1]])
+    guard = PrimaryKeyGuard(CRASHES)
+
+    with pytest.raises(DuplicatePrimaryKeyError, match=r"crashes\.collision_id 1"):
+        load(connection, path, CRASHES_SOURCE, progress, guard=guard, batch_size=4)
 
 
 def test_a_table_without_a_single_column_key_cannot_be_guarded():

@@ -2,19 +2,24 @@
 
 Each converter takes one raw CSV cell and returns the value to bind, or
 ``None`` when the cell is empty --- an empty string means NULL throughout this
-dataset (plan.md section 1, quirk 5).
+dataset.
 
 Every converter strips before it looks at anything. The source data carries
-stray leading spaces on both headers and values (quirk 11), and a converter
-that forgets to strip is the bug class switrs-to-sqlite shipped for years.
+stray leading spaces on both headers and values, and a converter that forgets
+to strip is the bug class switrs-to-sqlite shipped for years.
 
-A non-empty cell that does not fit its type raises `ValueError`. Silently
-nulling unparseable values would hide a CHP format change behind a column of
-NULLs; the loader turns the exception into a skipped row with a warning.
+A non-empty cell that does not fit its type raises `ValueError`, and only
+`ValueError`. Silently nulling unparseable values would hide a CHP format
+change behind a column of NULLs; the loader turns the exception into a skipped
+row with a warning, and any other exception type escapes it as a traceback.
+That is why the numeric converters reject what SQLite cannot store rather than
+leaving it to fail at insert time, thousands of rows later.
 """
 
 from __future__ import annotations
 
+import math
+import re
 from datetime import datetime
 
 # The source spells dates `M/D/YYYY H:MM:SS AM` --- no leading zeros, 12-hour
@@ -37,6 +42,24 @@ MIDNIGHT = "00:00:00"
 
 BOOLEAN_WORDS = {"true": 1, "false": 0}
 
+# SQLite's INTEGER is 64-bit. Python's is not, so a value past this parses
+# fine and then raises OverflowError from executemany, which is not a
+# ValueError and so escapes the loader's skip-and-warn path entirely.
+SQLITE_INTEGER_MIN = -(2**63)
+SQLITE_INTEGER_MAX = 2**63 - 1
+
+# `int()` and `float()` are more generous than this dataset ever needs: `int`
+# accepts underscore grouping (`1_0` is ten) and any Unicode decimal digit
+# (`٣` is three), and `float` accepts `nan` and `inf`. All of those would be
+# silent corruption in a numeric column, so the shapes are matched explicitly.
+# `\d` is deliberately not used --- it matches those same Unicode digits.
+_ASCII_INTEGER = re.compile(r"[+-]?[0-9]+")
+_ASCII_DIGITS = re.compile(r"[0-9]+")
+# `H:MM`, `HH:M` and friends: a punctuated clock reading, each half padded on
+# its own. Padding the string as a whole after dropping the colon turns `10:5`
+# into `0105`, which is a valid-looking time and the wrong one.
+_PUNCTUATED_TIME = re.compile(r"([0-9]{1,2}):([0-9]{1,2})")
+
 
 def to_text(value: str) -> str | None:
     """Return the cell stripped, or None when it holds nothing but whitespace."""
@@ -45,27 +68,47 @@ def to_text(value: str) -> str | None:
 
 
 def to_int(value: str) -> int | None:
-    """Return the cell as an integer, or None when empty."""
+    """Return the cell as an integer, or None when empty.
+
+    Only plain ASCII digits with an optional sign count, and only inside the
+    range SQLite's INTEGER can hold.
+    """
     stripped = value.strip()
     if not stripped:
         return None
 
-    try:
-        return int(stripped)
-    except ValueError:
-        raise ValueError(f"expected an integer, got {stripped!r}") from None
+    if not _ASCII_INTEGER.fullmatch(stripped):
+        raise ValueError(f"expected an integer, got {stripped!r}")
+
+    number = int(stripped)
+    if not SQLITE_INTEGER_MIN <= number <= SQLITE_INTEGER_MAX:
+        raise ValueError(f"expected a 64-bit integer, got {stripped!r}")
+
+    return number
 
 
 def to_real(value: str) -> float | None:
-    """Return the cell as a float, or None when empty."""
+    """Return the cell as a float, or None when empty.
+
+    Non-finite values are rejected rather than stored. SQLite has no NaN: it
+    writes one as NULL, which would make a NaN latitude indistinguishable from
+    the 22% of crashes that genuinely have no coordinates.
+    """
     stripped = value.strip()
     if not stripped:
         return None
 
     try:
-        return float(stripped)
+        number = float(stripped)
     except ValueError:
         raise ValueError(f"expected a number, got {stripped!r}") from None
+
+    # Catches `nan` and `inf` by name, and also `1e400`, which overflows to
+    # infinity without float() ever complaining.
+    if not math.isfinite(number):
+        raise ValueError(f"expected a finite number, got {stripped!r}")
+
+    return number
 
 
 def to_bool(value: str) -> int | None:
@@ -117,21 +160,33 @@ def to_time(value: str) -> str | None:
 def to_time_description(value: str) -> str | None:
     """Return a 24-hour ``HHMM`` string zero-padded to four digits, or None when empty.
 
-    A minority of values arrive punctuated as ``H:MM``; the colon is dropped
-    so the column holds one shape rather than two. 448 of the 214,873
-    `NotificationTimeDescription` values in the 2025 file look like this.
+    Two shapes are recognized and normalized to that width: a bare digit run
+    missing its leading zeros, and a punctuated clock reading. 448 of the
+    214,873 `NotificationTimeDescription` values in the 2025 file are
+    punctuated.
 
-    Values are otherwise left alone. The source contains impossible times such
-    as ``2500``, its marker for an unknown time; correcting those would be
-    guessing, and they are easy to filter once the width is uniform.
+    Each half of a punctuated value is padded separately, because the halves
+    mean different things. Dropping the colon first and padding the result as
+    one string reads ``10:5`` as ``0105`` --- a well-formed time, four digits
+    wide, nine hours off, and indistinguishable downstream from a real one.
+
+    Anything else is passed through exactly as it came, so this column is not
+    a width guarantee. The source contains impossible times such as ``2500``,
+    its marker for an unknown time, and free text such as ``UNK``; correcting
+    either would be guessing. Consumers wanting only clock readings should
+    filter on ``length(x) = 4``, which is what `_time_from_description` does.
     """
     stripped = value.strip()
     if not stripped:
         return None
 
-    unpunctuated = stripped.replace(":", "")
-    if unpunctuated.isdigit():
-        return unpunctuated.zfill(TIME_DESCRIPTION_WIDTH)
+    punctuated = _PUNCTUATED_TIME.fullmatch(stripped)
+    if punctuated is not None:
+        hours, minutes = punctuated.groups()
+        return f"{hours:0>2}{minutes:0>2}"
+
+    if _ASCII_DIGITS.fullmatch(stripped):
+        return stripped.zfill(TIME_DESCRIPTION_WIDTH)
 
     return stripped
 
@@ -171,7 +226,10 @@ def _time_from_description(value: str) -> str | None:
     typos (``2501``, ``2559``) along with it, since neither names a time.
     """
     padded = to_time_description(value)
-    if padded is None or not padded.isdigit() or len(padded) != TIME_DESCRIPTION_WIDTH:
+    if padded is None or len(padded) != TIME_DESCRIPTION_WIDTH:
+        return None
+
+    if not _ASCII_DIGITS.fullmatch(padded):
         return None
 
     hours, minutes = int(padded[:2]), int(padded[2:])
