@@ -50,7 +50,9 @@ TEXT: SQLType = "TEXT"
 
 # Stamped into PRAGMA user_version. Bump it whenever a column is added,
 # removed, renamed, or retyped, so a consumer can tell without introspecting.
-SCHEMA_VERSION = 1
+# 2: colour resolves into color_raw/color/color_secondary, and the two merged
+# datetimes each keep both of their raw inputs.
+SCHEMA_VERSION = 2
 
 _WHITESPACE_RUN = re.compile(r"\s+")
 
@@ -469,7 +471,13 @@ VEHICLES = Table(
         Column("make_raw", TEXT, to_text),
         Column("make", TEXT, to_text),
         Column("model", TEXT, to_text),
+        # The same arrangement as make_raw/make. A colour string names two
+        # tones on 2.1% of rows (`BLK/WHI` is a patrol car), so it resolves
+        # into two columns rather than being flattened or dropped. `color` is
+        # the first colour listed, not the primary one --- see color_map.
+        Column("color_raw", TEXT, to_text),
         Column("color", TEXT, to_text),
+        Column("color_secondary", TEXT, to_text),
         Column("is_towed", INTEGER, to_bool),
     ),
 )
@@ -483,7 +491,7 @@ VEHICLE_GROUP_HEADERS: tuple[Mapping[str, str], ...] = (
         "year": "Vehicle1Year",
         "make_raw": "Vehicle1Make",
         "model": "Vehicle1Model",
-        "color": "Vehicle1Color",
+        "color_raw": "Vehicle1Color",
         "is_towed": "V1IsVehicleTowed",
     },
     {
@@ -492,7 +500,7 @@ VEHICLE_GROUP_HEADERS: tuple[Mapping[str, str], ...] = (
         "year": "Vehicle2Year",
         "make_raw": "Vehicle2Make",
         "model": "Vehicle2Model",
-        "color": "Vehicle2Color",
+        "color_raw": "Vehicle2Color",
         "is_towed": "V2IsVehicleTowed",
     },
 )

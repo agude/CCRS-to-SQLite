@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from ccrs_to_sqlite.color_map import normalize_colors
 from ccrs_to_sqlite.make_map import normalize_make
 from ccrs_to_sqlite.schema import (
     VEHICLE_GROUP_HEADERS,
@@ -106,11 +107,14 @@ def _vehicle_row(
     party_id: SQLiteValue,
     collision_id: SQLiteValue,
 ) -> list[SQLiteValue]:
+    color, color_secondary = normalize_colors(row[group.positions["color_raw"]])
     values: dict[str, SQLiteValue] = {
         "party_id": party_id,
         "collision_id": collision_id,
         "vehicle_number": group.vehicle_number,
         "make": normalize_make(row[group.positions["make_raw"]]),
+        "color": color,
+        "color_secondary": color_secondary,
     }
 
     for column_name, position in group.positions.items():

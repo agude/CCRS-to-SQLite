@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from ccrs_to_sqlite.color_map import Color
 from ccrs_to_sqlite.make_map import Make
 from ccrs_to_sqlite.open_record import open_source_file
 from ccrs_to_sqlite.schema import PARTIES, VEHICLES, index_header_row, normalize_header
@@ -96,7 +97,9 @@ def test_one_vehicle_group_produces_one_row(plan, header_positions):
         "make_raw": "TOYT",
         "make": Make.TOYOTA,
         "model": "SIENNA",
-        "color": "WHI",
+        "color_raw": "WHI",
+        "color": Color.WHITE,
+        "color_secondary": None,
         "is_towed": 0,
     }
 
@@ -166,8 +169,8 @@ def test_a_bad_cell_names_its_column_and_its_vehicle(plan, header_positions):
 
 
 def test_the_plan_covers_every_column_the_groups_are_responsible_for(plan):
-    derived_from_the_make_map = {"make"}
-    expected = set(VEHICLES.column_names) - set(INHERITED_COLUMNS) - derived_from_the_make_map
+    derived_from_a_raw_column = {"make", "color", "color_secondary"}
+    expected = set(VEHICLES.column_names) - set(INHERITED_COLUMNS) - derived_from_a_raw_column
 
     for group in plan.groups:
         assert set(group.positions) == expected
@@ -180,3 +183,36 @@ def test_the_narrowed_column_lookup_still_covers_every_vehicles_column():
     then KeyError inside `_vehicle_row`, once per party row.
     """
     assert set(VEHICLE_COLUMNS_BY_NAME) == set(VEHICLES.column_names)
+
+
+def test_the_raw_colour_survives_normalization(plan, header_positions):
+    row = party_row(header_positions, partyid="1", collisionid="2", vehicle1color=" whi ")
+
+    vehicle = as_dictionary(vehicle_rows(plan, row)[0])
+
+    assert vehicle["color_raw"] == "whi"
+    assert vehicle["color"] == Color.WHITE
+    assert vehicle["color_secondary"] is None
+
+
+def test_a_two_tone_colour_fills_both_colour_columns(plan, header_positions):
+    """BLK/WHI is the most common compound in the dataset -- it is a patrol car."""
+    row = party_row(header_positions, partyid="1", collisionid="2", vehicle1color="BLK/WHI")
+
+    vehicle = as_dictionary(vehicle_rows(plan, row)[0])
+
+    assert vehicle["color_raw"] == "BLK/WHI"
+    assert vehicle["color"] == Color.BLACK
+    assert vehicle["color_secondary"] == Color.WHITE
+
+
+def test_an_unmapped_colour_leaves_both_columns_null_but_keeps_the_raw_string(
+    plan, header_positions
+):
+    row = party_row(header_positions, partyid="1", collisionid="2", vehicle1color="CHARTREUSE")
+
+    vehicle = as_dictionary(vehicle_rows(plan, row)[0])
+
+    assert vehicle["color_raw"] == "CHARTREUSE"
+    assert vehicle["color"] is None
+    assert vehicle["color_secondary"] is None

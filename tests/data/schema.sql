@@ -1,4 +1,4 @@
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 
 CREATE TABLE crashes (
     collision_id INTEGER PRIMARY KEY,
@@ -128,7 +128,9 @@ CREATE TABLE vehicles (
     make_raw TEXT,
     make TEXT,
     model TEXT,
+    color_raw TEXT,
     color TEXT,
+    color_secondary TEXT,
     is_towed INTEGER,
     PRIMARY KEY (party_id, vehicle_number)
 ) STRICT;

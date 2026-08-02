@@ -62,6 +62,12 @@ adheres to [Semantic Versioning][semver].
 - `tests/data/schema.sql` pins the exact DDL, regenerated with
   `just schema-snapshot`. A rename or a retype now fails a test.
 
+- Vehicle colour is normalized the way makes are: `color_raw` keeps the
+  source string, `color` and `color_secondary` hold the resolved names. 2.1%
+  of values name two tones, so a single column would have had to flatten or
+  drop them. The map covers 99.75% of vehicle rows over 29 colours; what is
+  left is `UNK`, `OTH` and `MUL`, which name no colour.
+
 ### Fixed
 
 - Punctuated times pad each half separately. `10:5` became `0105` — a
@@ -74,7 +80,7 @@ adheres to [Semantic Versioning][semver].
 - `to_int` accepts only plain ASCII digits. `int()` reads underscore
   grouping and Unicode digits, so `1_0` silently became ten.
 - `to_real` rejects non-finite values. SQLite stores a NaN as NULL, which
-  made a NaN latitude indistinguishable from the 22% of crashes that have no
+  made a NaN latitude indistinguishable from the 31% of crashes that have no
   coordinates; `inf` and `1e400` were stored as REAL infinities.
 - A primary key repeated inside a single file is caught by the guard, with
   the explanation that already existed for the across-files case, instead of

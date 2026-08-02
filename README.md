@@ -107,6 +107,21 @@ Notable conversions:
   of vehicle rows across all published years, over 86 makers. It has to carry
   two conventions: the later years use NCIC codes (`TOYT`), the earlier ones a
   plain truncation (`TOYO`), and `TOYO` alone is 498,501 rows.
+- Colour works the same way but resolves into **three** columns: `color_raw`
+  verbatim, plus `color` and `color_secondary`. 2.1% of source values name two
+  tones — `BLK/WHI`, 11,153 rows, is a patrol car — so a single column would
+  have had to flatten them, losing the only interesting thing about those
+  rows, or drop them, undercounting black and white vehicles by six figures.
+  The map covers **99.75%** of vehicle rows over 29 colours.
+
+  `color` is **the first colour listed, not the primary colour.** The source
+  looks like it has a primary/secondary convention until the mirrored pairs
+  are counted: `BLK/WHI` outnumbers `WHI/BLK` 11,153 to 3,603, but `BLK/GRY`
+  and `GRY/BLK` are 1,061 to 1,058. Shades stay distinct — `DBL` is dark blue,
+  not blue — because the source means something by the distinction, and
+  collapsing it is a `CASE` a consumer can write but cannot undo. `UNK`, `OTH`
+  and `MUL` ("several", without saying which) name no colour and stay `NULL`,
+  for the same reason `UNKNOWN` is not a vehicle make.
 - `vehicle_number` is which source column group the row came from, not an
   ordinal over the party's vehicles. An empty first group is skipped, so a
   party carrying only `Vehicle2*` columns would get one row numbered 2 and no

@@ -157,7 +157,10 @@ def test_computed_tables_read_no_headers_directly():
 
 def test_the_vehicle_groups_fill_the_same_vehicles_columns():
     computed_by_the_splitter = {"party_id", "collision_id", "vehicle_number"}
-    filled_from_headers = set(VEHICLES.column_names) - computed_by_the_splitter - {"make"}
+    # make and the two colour columns are derived from a raw column rather
+    # than read from a header of their own.
+    derived = {"make", "color", "color_secondary"}
+    filled_from_headers = set(VEHICLES.column_names) - computed_by_the_splitter - derived
 
     for group in VEHICLE_GROUP_HEADERS:
         assert set(group) == filled_from_headers
