@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from contextlib import closing
 
@@ -30,6 +31,40 @@ def test_every_make_declares_at_least_one_raw_string():
     assert set(RAW_STRINGS_BY_MAKE) == set(Make)
     for make, raw_strings in RAW_STRINGS_BY_MAKE.items():
         assert raw_strings, make
+
+
+def test_no_two_makers_share_a_value():
+    """A duplicate value aliases silently rather than raising.
+
+    The second member becomes an alias of the first, vanishes from iteration,
+    and hands its raw strings to the wrong maker. `set(RAW_STRINGS_BY_MAKE) ==
+    set(Make)` above cannot see it, because aliases are not iterated. With 83
+    makers merged from two source maps this is the likeliest way the map
+    breaks, so it is asserted directly as well as via @unique.
+    """
+    assert len(Make.__members__) == len(list(Make))
+    assert len({make.value for make in Make}) == len(list(Make))
+
+
+def test_no_raw_string_is_another_makers_name():
+    """Many spellings may share a maker; a maker's own name may not be shared.
+
+    The map is many-to-one by design, but the canonical names have to stay
+    one-to-one or `make` stops being a key you can group by.
+    """
+    canonical = {make.value: make for make in Make}
+    for raw_string, make in MAKE_MAP.items():
+        owner = canonical.get(raw_string)
+        assert owner is None or owner is make, (
+            f"{raw_string!r} is {make.value}'s spelling but {owner} is named that"
+        )
+
+
+def test_member_names_match_their_values():
+    """Catches a typo in either half, which nothing else would notice."""
+    for make in Make:
+        expected = re.sub(r"[^A-Z0-9]+", "_", make.value).strip("_")
+        assert make.name == expected, f"{make.name} declares {make.value!r}"
 
 
 def test_every_make_maps_its_own_full_name():
