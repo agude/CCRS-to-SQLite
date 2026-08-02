@@ -92,7 +92,7 @@ def to_real(value: str) -> float | None:
 
     Non-finite values are rejected rather than stored. SQLite has no NaN: it
     writes one as NULL, which would make a NaN latitude indistinguishable from
-    the 22% of crashes that genuinely have no coordinates.
+    the 31% of crashes that genuinely have no coordinates.
     """
     stripped = value.strip()
     if not stripped:

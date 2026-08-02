@@ -11,7 +11,9 @@ as NULL.
 
 So the map is seeded from switrs-to-sqlite, which accumulated both conventions
 plus a long tail of real-world typos (`BWM`, `BMW/`) over years of NCIC data,
-and corrected against CCRS frequencies where the two disagree.
+and corrected against CCRS frequencies where the two disagree. That reaches
+96.7% of vehicle rows across all eleven years. What is left is a genuine long
+tail: 444,000 rows over 30,151 distinct strings, none above 6,000 rows.
 
 The map is deliberately *not* the switrs-to-sqlite design, where the mapped
 value replaced the raw string and every correction to the map changed the

@@ -95,6 +95,58 @@ def test_merz_is_mercedes_and_merc_is_mercury():
     assert normalize_make("MERC") == Make.MERCURY
 
 
+@pytest.mark.parametrize(
+    ("raw_string", "expected", "evidence"),
+    [
+        # The single largest string in the dataset, 498,501 rows, and NULL
+        # until the map learned the earlier years' convention.
+        ("TOYO", Make.TOYOTA, "Camry, Corolla, Prius, Tacoma"),
+        ("LEXU", Make.LEXUS, "RX350, IS250, ES350"),
+        ("INTE", Make.INTERNATIONAL, "PROSTAR, 4300, 92% trucks"),
+        # Three-letter makes are X-padded into the four-character field.
+        ("BMWX", Make.BMW, "BMW's motorcycle share, which few makers have"),
+        ("KIAX", Make.KIA, "car/SUV/minivan mix matching KIA"),
+        ("GMCX", Make.GMC, "pickup-dominant exactly as GMC is"),
+        # Trailer makers. The spelled-out names appear separately in the data
+        # with the same vehicle-type profile, which is what confirms these.
+        ("WABA", Make.WABASH, "semi-trailers; WABASH also appears spelled out"),
+        ("GDAN", Make.GREAT_DANE, "semi-trailers; GREAT DANE also appears"),
+        ("MIFU", Make.MITSUBISHI, "OUTLANDER, LANCER, MIRAGE, ECLIPSE"),
+        ("THOB", Make.THOMAS, "96% school buses; HDX is a Thomas Built model"),
+    ],
+)
+def test_the_codes_verified_against_the_data_stay_mapped(raw_string, expected, evidence):
+    """Each was confirmed from the model and vehicle-type columns, not guessed.
+
+    Pinned because the evidence lives in a database nobody has at hand, so a
+    later edit could drop one without anything else noticing.
+    """
+    assert normalize_make(raw_string) == expected, evidence
+
+
+@pytest.mark.parametrize(
+    ("raw_string", "what_it_actually_is"),
+    [
+        ("OTBX", "transit authority buses"),
+        ("ORTR", "48% fire trucks"),
+        ("OTAX", "assorted cars"),
+        ("OTMO", "motorcycles"),
+        ("SPCN", "'special construction' utility trailers"),
+        ("SPCNS", "the same"),
+        ("WANC", "a real trailer maker, but nothing says which"),
+        ("UNK", "a placeholder"),
+    ],
+)
+def test_category_placeholders_are_not_mapped_to_makers(raw_string, what_it_actually_is):
+    """These look like maker codes and are not.
+
+    Their vehicle types give them away. Mapping one would invent a
+    manufacturer that aggregates alongside real ones, which is the same
+    mistake `UNKNOWN` has always been kept out for.
+    """
+    assert normalize_make(raw_string) is None, what_it_actually_is
+
+
 @pytest.mark.parametrize("raw_string", [" toyt ", "toyota", "Toyt", "TOYT\t"])
 def test_lookup_strips_and_upper_cases_first(raw_string):
     assert normalize_make(raw_string) == Make.TOYOTA

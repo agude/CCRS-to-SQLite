@@ -8,7 +8,8 @@ switrs-to-sqlite learned late; they are built in here from the start.
 
 The failure policy is deliberate. A row the parser cannot make sense of is
 skipped with a warning and counted, because aborting a twenty-minute load at
-row 151,092 is hostile when the measured rate is one bad row in 780,000.
+row 151,092 is hostile when the measured rate is one bad row in 19 million
+-- that row, in fact, is the only one in every published year.
 A duplicate primary key is fatal, because it means two source files disagree
 and silently picking one hides the corruption.
 """
@@ -323,8 +324,16 @@ def load_source_file(
         plan = _plan_source_file(reader, kind, path.name)
         batches = _Batches(connection, kind, guard, path.name, batch_size)
 
+        # A short *final* row is the signature of a truncated download, not of
+        # malformed data: the file stops mid-record. Tracked per row and
+        # cleared by the next one, so after the loop it is set only if the
+        # last row was short. A row with too many fields is the opposite case
+        # --- an unquoted comma in free text --- and is left alone.
+        short_final_row: tuple[int, int] | None = None
+
         for row in _read_rows(reader, path.name):
             report.rows_read += 1
+            short_final_row = (reader.line_num, len(row)) if len(row) < plan.field_count else None
             try:
                 converted = plan.convert(row)
             except ValueError as error:
@@ -345,6 +354,8 @@ def load_source_file(
                 print(f"{path.name}: {report.rows_read:,} rows", file=progress)
 
         batches.flush()
+        if short_final_row is not None:
+            _warn_file_ends_mid_row(path, plan.field_count, short_final_row, progress)
 
     if guard is not None:
         guard.finish_file(path.name)
@@ -360,9 +371,15 @@ def count_orphans(connection: sqlite3.Connection, table: Table) -> int:
     """Count rows whose collision_id matches no crash.
 
     Not an error. A report that straddles a year boundary lands its parties in
-    one file and its crash in another, so about 0.06% of rows are orphaned
-    when a single year is loaded. Enforced foreign keys would reject them;
-    counting them says how much of the picture is missing.
+    one file and its crash in another. Loading every published year leaves
+    0.035% of parties and 0.039% of injured/witness/passenger rows orphaned;
+    a single year strands more, since both sides of a boundary are missing.
+    Enforced foreign keys would reject them; counting them says how much of
+    the picture is missing.
+
+    A sharp rise here is worth investigating rather than accepting: an
+    incomplete crashes file orphans every party belonging to the crashes it
+    is missing, which is how a truncated download was caught.
     """
     statement = (
         f"SELECT COUNT(*) FROM {table.name} "
@@ -568,6 +585,32 @@ def _warn_skipped_row(
         raise ValueError(message) from None
 
     print(f"warning: skipping row, {message}", file=progress)
+
+
+def _warn_file_ends_mid_row(
+    path: Path,
+    expected_fields: int,
+    short_final_row: tuple[int, int],
+    progress: TextIO,
+) -> None:
+    """Say that a file looks truncated rather than merely malformed.
+
+    Without this the only trace is one skipped row among however many the load
+    reports, indistinguishable from the one-in-19-million ragged row the source
+    genuinely contains. A truncated file is far more damaging than that: it
+    loads cleanly, exits zero, and quietly drops every row past the cut, which
+    then orphans every child row pointing at them. A 24% short crashes file
+    inflated the measured orphan rate thirty-five fold and looked like a
+    property of the data until the row counts were checked against the source.
+    """
+    line_number, field_count = short_final_row
+    print(
+        f"warning: {path.name} ends mid-row --- line {line_number} has {field_count} of "
+        f"{expected_fields} fields. That usually means the file is an incomplete "
+        f"download rather than malformed data. Check its size against the source "
+        f"before trusting this load.",
+        file=progress,
+    )
 
 
 def _warn_skipped_vehicles(

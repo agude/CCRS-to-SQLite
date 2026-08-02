@@ -208,6 +208,51 @@ def test_a_ragged_row_is_skipped_and_counted(tmp_path, connection, progress):
     assert stored(connection, CRASHES, "collision_id") == [(1,), (2,)]
 
 
+def test_a_file_ending_mid_row_is_called_out_as_a_probable_truncation(
+    tmp_path, connection, progress
+):
+    """A short final row means the download stopped, not that the data is bad.
+
+    This is the signal that was thrown away when a 24% short crashes file
+    loaded cleanly: its truncation surfaced as one skipped row, identical in
+    appearance to the genuine one-in-19-million ragged row, and was only
+    caught later by row counts that did not add up.
+    """
+    path = write_source_file(tmp_path, "crashes", [a_crash(1)])
+    with path.open("a", newline="", encoding="utf-8") as source_file:
+        source_file.write("2,3,4\r\n")
+
+    report = load(connection, path, CRASHES_SOURCE, progress)
+
+    assert (report.rows_loaded, report.rows_skipped) == (1, 1)
+    assert "ends mid-row" in progress.getvalue()
+    assert "line 3 has 3 of 74 fields" in progress.getvalue()
+    assert "incomplete download" in progress.getvalue()
+
+
+def test_a_row_with_too_many_fields_is_not_called_a_truncation(tmp_path, connection, progress):
+    """The opposite defect: an unquoted comma in free text, which truncation never produces."""
+    path = write_source_file(tmp_path, "crashes", [a_crash(1)])
+    with path.open("a", newline="", encoding="utf-8") as source_file:
+        source_file.write(",".join(str(n) for n in range(80)) + "\r\n")
+
+    load(connection, path, CRASHES_SOURCE, progress)
+
+    assert "ends mid-row" not in progress.getvalue()
+
+
+def test_a_short_row_in_the_middle_is_not_called_a_truncation(tmp_path, connection, progress):
+    """Only the *final* row indicates where the file stopped."""
+    path = write_source_file(tmp_path, "crashes", [a_crash(1), a_crash(2)])
+    header, first, second = path.read_text().splitlines()
+    path.write_text("\r\n".join([header, first, "3,4,5", second]) + "\r\n")
+
+    report = load(connection, path, CRASHES_SOURCE, progress)
+
+    assert (report.rows_loaded, report.rows_skipped) == (2, 1)
+    assert "ends mid-row" not in progress.getvalue()
+
+
 def test_a_skipped_row_warning_names_the_file_line_and_field_count(tmp_path, connection, progress):
     path = write_source_file(tmp_path, "crashes", [a_crash(1)])
     with path.open("a", newline="", encoding="utf-8") as source_file:
