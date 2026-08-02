@@ -27,3 +27,4 @@ analyze_years.py
 port_make_map.py
 section8.txt
 verify_makes.py
+verify_quirks.py
