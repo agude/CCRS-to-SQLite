@@ -62,9 +62,9 @@ def test_no_input_arguments_is_a_usage_error():
     assert exit_info.value.code == 2
 
 
-def test_directory_mode_is_not_implemented_yet():
+def test_directory_mode_and_file_flags_are_mutually_exclusive():
     with pytest.raises(SystemExit) as exit_info:
-        main(["some_dir"])
+        main(["some_dir", "--crashes", "a.csv"])
 
     assert exit_info.value.code == 2
 
@@ -305,6 +305,29 @@ def test_main_reports_a_failure_without_a_traceback(tmp_path, capsys):
 
     assert exit_code == 1
     assert "error:" in capsys.readouterr().err
+
+
+def test_directory_mode_discovers_and_converts(tmp_path, capsys):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    write_source_file(data_dir, "crashes", [a_crash(100), a_crash(200)])
+    write_source_file(data_dir, "parties", [a_party(1, 100), a_party(2, 200)])
+    write_source_file(data_dir, "injuredwitnesspassengers", [a_person(10, 100)])
+    database = tmp_path / "ccrs.sqlite3"
+
+    exit_code = main(["--output-file", str(database), str(data_dir)])
+
+    assert exit_code == 0
+    assert rows(database, "SELECT COUNT(*) FROM crashes") == [(2,)]
+    assert rows(database, "SELECT COUNT(*) FROM parties") == [(2,)]
+    assert rows(database, "SELECT COUNT(*) FROM injured_witness_passengers") == [(1,)]
+
+
+def test_directory_mode_reports_nonexistent_directory(tmp_path, capsys):
+    exit_code = main([str(tmp_path / "nope"), "--output-file", str(tmp_path / "out.sqlite3")])
+
+    assert exit_code == 1
+    assert "not a directory" in capsys.readouterr().err
 
 
 def test_strict_reaches_the_loader(tmp_path, capsys):

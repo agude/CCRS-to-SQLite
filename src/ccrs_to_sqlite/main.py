@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TextIO
 
 from ccrs_to_sqlite import __version__
+from ccrs_to_sqlite.discover import IncompleteYearError, discover
 from ccrs_to_sqlite.load import (
     CRASHES_SOURCE,
     INJURED_SOURCE,
@@ -193,20 +194,27 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.data_dir is None and not sources:
         parser.error("give a data directory, or at least one of --crashes/--parties/--injured")
 
-    if arguments.data_dir is not None:
-        parser.error(
-            "directory mode is not implemented yet; name the files with "
-            "--crashes/--parties/--injured"
-        )
+    if arguments.data_dir is not None and sources:
+        parser.error("give a data directory or --crashes/--parties/--injured, not both")
 
     try:
+        if arguments.data_dir is not None:
+            sources = _sources_from_directory(arguments.data_dir)
+
         convert(
             sources,
             arguments.output_file,
             strict=arguments.strict,
             parse_error=arguments.parse_error,
         )
-    except (OSError, ValueError, csv.Error, sqlite3.Error, DuplicatePrimaryKeyError) as error:
+    except (
+        OSError,
+        ValueError,
+        csv.Error,
+        sqlite3.Error,
+        DuplicatePrimaryKeyError,
+        IncompleteYearError,
+    ) as error:
         print(f"error: {error}", file=sys.stderr)
         return FAILURE_EXIT_CODE
 
@@ -281,6 +289,25 @@ def _record_and_report_orphans(
             f"shrinks the count.",
             file=progress,
         )
+
+
+def _sources_from_directory(directory: Path) -> SourceFiles:
+    """Discover CCRS files in a directory and return them as ``SourceFiles``."""
+    years = discover(directory, progress=sys.stderr)
+    crashes: list[Path] = []
+    parties: list[Path] = []
+    injured: list[Path] = []
+    for _year in sorted(years):
+        group = years[_year]
+        crashes.append(group[CRASHES_SOURCE])
+        parties.append(group[PARTIES_SOURCE])
+        injured.append(group[INJURED_SOURCE])
+
+    return SourceFiles(
+        crashes=tuple(crashes),
+        parties=tuple(parties),
+        injured=tuple(injured),
+    )
 
 
 if __name__ == "__main__":

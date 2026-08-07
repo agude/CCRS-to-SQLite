@@ -42,6 +42,29 @@ schema-snapshot:
       SCHEMA_SNAPSHOT.write_text(rendered_schema(), encoding='utf-8')"
     @echo "Wrote tests/data/schema.sql. Review the diff before committing."
 
+# Rewrite the golden-test snapshot after a deliberate converter or schema change.
+golden-snapshot:
+    #!/usr/bin/env bash
+    uv run python3 -c "
+    import io, sqlite3, tempfile
+    from contextlib import closing
+    from pathlib import Path
+    from ccrs_to_sqlite.main import SourceFiles, convert
+    import sys; sys.path.insert(0, 'tests')
+    from test_golden import _dump_data, GOLDEN_DIR, EXPECTED_SQL
+    db = Path(tempfile.mktemp(suffix='.sqlite3'))
+    sources = SourceFiles(
+        crashes=(GOLDEN_DIR / 'crashes.csv',),
+        parties=(GOLDEN_DIR / 'parties.csv',),
+        injured=(GOLDEN_DIR / 'injuredwitnesspassengers.csv',),
+    )
+    convert(sources, db, progress=io.StringIO())
+    with closing(sqlite3.connect(db)) as con:
+        EXPECTED_SQL.write_text(_dump_data(con), encoding='utf-8')
+    db.unlink()
+    print(f'Wrote {EXPECTED_SQL}. Review the diff before committing.')
+    "
+
 # Build the package
 build:
     uv build
