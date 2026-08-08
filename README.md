@@ -17,9 +17,10 @@ CCRS and is **not** compatible with the SWITRS database format.
 
 ## Status
 
-Early development. Conversion works for named source files; directory mode is
-not implemented yet. The schema is documented below and is not frozen until
-v1.0; see `CHANGELOG.md` for what has landed.
+Pre-release. Both directory mode and explicit-file mode work; conversion of
+all eleven published years (19M rows, 4.8 GB CSV) completes in about 22
+minutes with one skipped row. The schema is documented below and is not frozen
+until v1.0; see `CHANGELOG.md` for what has landed.
 
 ## Installation
 
@@ -29,9 +30,38 @@ pip install ccrs-to-sqlite
 
 The package has no runtime dependencies beyond the standard library.
 
+## Downloading the data
+
+The dataset is at <https://data.ca.gov/dataset/ccrs>. Each year has three
+files — crashes, parties, and injuredwitnesspassengers — published as CSVs
+and updated daily. All are public domain.
+
+1. Open <https://data.ca.gov/dataset/ccrs>.
+2. Click the year you want (e.g. "Crashes 2025") to reach its resource page.
+3. Click **Download** on the resource page to get the CSV.
+4. Repeat for the matching parties and injuredwitnesspassengers files.
+5. Put all the CSVs in one directory, keeping the original filenames
+   (`crashes_2025.csv`, `parties_2025.csv`,
+   `injuredwitnesspassengers_2025.csv`).
+
+Downloading all eleven years (2016–2026) gives 33 files totalling about
+4.8 GB. There is no bulk download; each file is a separate click. A
+`download` subcommand hitting the CKAN API is planned for a future release.
+
 ## Usage
 
-Download the CSVs for the years you want, then name them:
+Point the tool at the directory of CSVs:
+
+```bash
+ccrs_to_sqlite ccrs_data/ -o ccrs.sqlite3
+```
+
+Directory mode discovers files named `{crashes,parties,injuredwitnesspassengers}_YYYY.csv[.gz]`,
+groups them by year, requires a complete triple (all three file kinds) for
+each year, and loads every complete year into one database. Incomplete years
+are warned about and skipped.
+
+To load specific files instead of a directory:
 
 ```bash
 ccrs_to_sqlite \
@@ -41,9 +71,8 @@ ccrs_to_sqlite \
     -o ccrs.sqlite3
 ```
 
-Each flag is repeatable, so several years can go into one database. Pointing
-the tool at a directory (`ccrs_to_sqlite ccrs_data/`) is the planned primary
-interface but is not implemented yet.
+Each flag is repeatable, so several years can go into one database. The two
+modes are mutually exclusive.
 
 `.csv.gz` files are accepted anywhere a `.csv` is; compression is detected
 from the file's contents, not its name.
